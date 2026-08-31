@@ -4,10 +4,10 @@ import flet as ft
 from flet import component, use_effect, use_state
 
 import theme
-from config import APP_TITLE
 from controllers.quiz_controller import QuizController
 from state.app_state import AppState
 from widgets.feedback import notify
+from widgets.navbar import app_bar
 
 SECTION_ORDER = [("reading", "Reading"), ("listening", "Listening"), ("vocabulary_grammar", "Vocabulary")]
 
@@ -62,7 +62,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
         content=ft.Column(
             [
                 ft.Text(
-                    "👋 Welcome back",
+                    "Welcome back",
                     size=16,
                     color=ft.Colors.WHITE_70,
                 ),
@@ -333,31 +333,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
     return ft.View(
         route="/quizzes",
         bgcolor=theme.BACKGROUND,
-        appbar=ft.AppBar(
-            bgcolor=theme.SURFACE,
-            elevation=0,
-            center_title=False,
-            title=ft.Text(
-                APP_TITLE,
-                weight=ft.FontWeight.BOLD,
-                color=theme.TEXT_PRIMARY,
-            ),
-            actions=[
-                ft.Container(
-                    alignment=ft.Alignment.CENTER,
-                    padding=ft.Padding(right=12),
-                    content=ft.CircleAvatar(
-                        radius=18,
-                        bgcolor=theme.PRIMARY,
-                        content=ft.Text(
-                            state.email[:1].upper(),
-                            color=ft.Colors.WHITE,
-                            weight=ft.FontWeight.BOLD,
-                        ),
-                    ),
-                )
-            ],
-        ),
+        appbar=app_bar(state),
         controls=[
             theme.responsive(
                 body,

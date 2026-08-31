@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from flet import Route, Router, component
 
+from controllers.admin_controller import AdminController
 from controllers.auth_controller import AuthController
 from controllers.quiz_controller import QuizController
+from screens.admin_grades import AdminGradesScreen
+from screens.admin_quiz_list import AdminQuizListScreen
 from screens.login import LoginScreen
 from screens.picker import QuizPickerScreen
 from screens.question import QuestionScreen
@@ -18,7 +21,7 @@ from state.app_state import AppState
 
 
 def make_app(
-    state: AppState, auth: AuthController, quiz: QuizController
+    state: AppState, auth: AuthController, quiz: QuizController, admin: AdminController
 ) -> component:
     """Build the root component for the current session."""
 
@@ -39,6 +42,14 @@ def make_app(
         return ResultsScreen(state, quiz)
 
     @component
+    def _admin_quizzes():
+        return AdminQuizListScreen(state, admin)
+
+    @component
+    def _admin_grades():
+        return AdminGradesScreen(state, admin)
+
+    @component
     def App():
         return Router(
             [
@@ -46,6 +57,8 @@ def make_app(
                 Route(path="quizzes", component=_picker),
                 Route(path="quiz/:index", component=_question),
                 Route(path="results", component=_results),
+                Route(path="admin/grades", component=_admin_quizzes),
+                Route(path="admin/grades/:quiz_id", component=_admin_grades),
             ],
             manage_views=True,
         )

@@ -3,12 +3,12 @@ from typing import Annotated, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import verify_token
-from app.models import User
+from app.core.monorepo_auth import get_session
+from app.crud import user as crud_user
+from app.models import User, UserRole
 
 
 oauth2_scheme = OAuth2PasswordBearer(
@@ -29,15 +29,26 @@ async def get_current_user(
     if not token:
         raise credentials_exception
 
-    token_data = verify_token(token)
-    if token_data is None or token_data.user_id is None:
+    session = await get_session(token)
+    if session is None:
         raise credentials_exception
 
-    result = await db.exec(select(User).where(User.id == token_data.user_id))
-    user = result.first()
-    if user is None:
+    email = session["user"].get("email")
+    if not email:
         raise credentials_exception
-    return user
+
+    return await crud_user.get_or_create_by_email(db, email)
+
+
+async def get_current_admin_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return current_user
 
 
 async def get_optional_current_user(
@@ -46,8 +57,13 @@ async def get_optional_current_user(
 ) -> Optional[User]:
     if not token:
         return None
-    token_data = verify_token(token)
-    if token_data is None or token_data.user_id is None:
+
+    session = await get_session(token)
+    if session is None:
         return None
-    result = await db.exec(select(User).where(User.id == token_data.user_id))
-    return result.first()
+
+    email = session["user"].get("email")
+    if not email:
+        return None
+
+    return await crud_user.get_or_create_by_email(db, email)

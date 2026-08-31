@@ -1,5 +1,6 @@
 from models import (
     Answer,
+    CourseLevel,
     LanguageLevel,
     MediaType,
     Question,
@@ -11,6 +12,7 @@ from models import (
     QuizMedia,
     QuizQuestion,
     User,
+    UserRole,
 )
 
 __all__ = [
@@ -24,6 +26,8 @@ __all__ = [
     "QuizQuestion",
     "QuestionType",
     "MediaType",
+    "CourseLevel",
     "LanguageLevel",
     "QuizCategory",
+    "UserRole",
 ]

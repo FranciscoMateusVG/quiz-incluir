@@ -5,13 +5,22 @@ from uuid import UUID, uuid4
 from sqlalchemy import Column, JSON, DateTime, UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
-from quiz_shared.enums import LanguageLevel, MediaType, QuestionType, QuizCategory
+from quiz_shared.enums import (
+    LanguageLevel,
+    MediaType,
+    QuestionType,
+    QuizCategory,
+    CourseLevel,
+    UserRole,
+)
 
 __all__ = [
+    "CourseLevel",
     "LanguageLevel",
     "MediaType",
     "QuestionType",
     "QuizCategory",
+    "UserRole",
     "User",
     "QuizQuestion",
     "Quiz",
@@ -49,7 +58,8 @@ class User(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     email: str = Field(index=True, unique=True)
-    level: LanguageLevel
+    level: CourseLevel
+    role: UserRole = Field(default=UserRole.STUDENT)
 
     created_at: datetime = Field(default_factory=_utcnow, sa_column=_tz_datetime_column())
 
@@ -79,6 +89,9 @@ class QuizQuestion(SQLModel, table=True):
 
     position: int = 0
 
+    quiz: "Quiz" = Relationship(sa_relationship_kwargs={"overlaps": "questions,quizzes"})
+    question: "Question" = Relationship(sa_relationship_kwargs={"overlaps": "questions,quizzes"})
+
 # -------------------------
 # Quiz
 # -------------------------
@@ -105,6 +118,9 @@ class Quiz(SQLModel, table=True):
     attempts: list["QuizAttempt"] = Relationship(back_populates="quiz")
 
     media: list["QuizMedia"] = Relationship(back_populates="quiz")
+
+    def __str__(self) -> str:
+        return self.title
 
 
 # -------------------------
@@ -159,6 +175,9 @@ class Question(SQLModel, table=True):
     )
 
     answers: list["Answer"] = Relationship(back_populates="question")
+
+    def __str__(self) -> str:
+        return self.prompt[:60] + "…" if len(self.prompt) > 60 else self.prompt
 
 # -------------------------
 # Media

@@ -28,7 +28,19 @@ class LanguageLevel(str, Enum):
     C2 = "C2"
 
 
+class CourseLevel(str, Enum):
+    B1 = "B1"
+    B2 = "B2"
+    B3 = "B3"
+    B4 = "B4"
+
+
 class QuizCategory(str, Enum):
     READING = "reading"
     LISTENING = "listening"
     VOCABULARY_GRAMMAR = "vocabulary_grammar"
+
+
+class UserRole(str, Enum):
+    STUDENT = "student"
+    ADMIN = "admin"

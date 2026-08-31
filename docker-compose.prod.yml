@@ -8,8 +8,13 @@
 # it server-side over the internal Docker network.
 #
 # Required Dokploy-managed env vars (set in the Dokploy environment panel):
-#   QUIZ_DB_PASSWORD  — Postgres password for the dedicated quiz DB
-#   SECRET_KEY        — JWT signing key (generate: openssl rand -hex 32)
+#   QUIZ_DB_PASSWORD   — Postgres password for the dedicated quiz DB
+#   SECRET_KEY         — session-signing key for the SQLAdmin panel (generate: openssl rand -hex 32)
+#   MONOREPO_AUTH_URL  — base URL of the Programa Incluir monorepo's auth API (hono-app).
+#                        Use the internal hostname (e.g. http://hono-app:3003) ONLY if this
+#                        service and hono-app's container are confirmed to share the same
+#                        dokploy-network; otherwise use hono-app's public HTTPS URL
+#                        (e.g. https://new.programaincluir.org).
 
 services:
   quiz-incluir-frontend-e17b8a:
@@ -36,6 +41,7 @@ services:
       # postgresql+asyncpg:// automatically — plain URL is correct here.
       DATABASE_URL: postgresql://quiz:${QUIZ_DB_PASSWORD}@quiz-incluir-db-e17b8a:5432/quiz
       SECRET_KEY: ${SECRET_KEY}
+      MONOREPO_AUTH_URL: ${MONOREPO_AUTH_URL}
     depends_on:
       quiz-incluir-db-e17b8a:
         condition: service_healthy

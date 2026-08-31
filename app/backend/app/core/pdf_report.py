@@ -20,6 +20,7 @@ from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer
 
+from app.core.grading import normalize_score, normalized_max_score
 from app.core.question_types import HANDLERS, parse_config
 from app.models import Answer, MediaType, Question, QuestionMedia, Quiz, QuizAttempt, QuizMedia
 
@@ -127,11 +128,13 @@ def build_attempt_report(
         title=f"Quiz report - {quiz.title}",
     )
 
+    display_score = normalize_score(attempt.score, max_score) or 0.0
+    display_max = normalized_max_score(max_score)
     story: list = [
         Paragraph(_esc(quiz.title), styles["Title"]),
         Spacer(1, 6),
         Paragraph(
-            f"Score: {attempt.score or 0:g} / {max_score:g}"
+            f"Score: {display_score:g} / {display_max:g}"
             f" &mdash; generated {datetime.now():%Y-%m-%d %H:%M}",
             styles["Normal"],
         ),
@@ -169,10 +172,15 @@ def build_attempt_report(
                 breakdown = handler.option_breakdown(config)
                 if breakdown is not None:
                     for option_text, option_correct, explanation in breakdown:
-                        label = "Correct" if option_correct else "Incorrect"
                         style = styles["CorrectAnswer"] if option_correct else styles["AnswerWrong"]
+                        if option_correct:
+                            label = "Correct"
+                        elif explanation:
+                            label = f"Incorrect: {_esc(explanation)}"
+                        else:
+                            label = "Incorrect"
                         story.append(Paragraph(f"{_esc(option_text)} ({label})", style))
-                        if explanation:
+                        if option_correct and explanation:
                             story.append(Paragraph(_esc(explanation), styles["Explanation"]))
                 else:
                     correct_text = handler.correct_answer_text(config)

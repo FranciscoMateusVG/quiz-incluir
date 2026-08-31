@@ -12,7 +12,7 @@ import dataclasses
 
 import flet as ft
 
-from models.attempt import AttemptResult
+from models.attempt import AttemptResult, User
 from models.quiz import Quiz
 from models.question import Question
 
@@ -22,6 +22,7 @@ from models.question import Question
 class AppState:
     token: str | None = None
     email: str = ""
+    current_user: User | None = None
 
     quiz: Quiz | None = None
     questions: list[Question] = dataclasses.field(default_factory=list)

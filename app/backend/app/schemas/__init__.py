@@ -1,3 +1,7 @@
+from app.schemas.admin import (
+    AdminAttemptRow,
+    QuestionStatRow,
+)
 from app.schemas.answer import (
     AnswerCreate,
     AnswerRead,
@@ -35,6 +39,8 @@ from app.schemas.user import (
 )
 
 __all__ = [
+    "AdminAttemptRow",
+    "QuestionStatRow",
     "AnswerCreate",
     "AnswerRead",
     "AnswerSubmit",

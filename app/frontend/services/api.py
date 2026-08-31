@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import httpx
 
+from models.admin import AdminAttemptRow, QuestionStatRow
 from models.answer import AnswerRead
 from models.attempt import Attempt, AttemptResult
 from models.quiz import Quiz
@@ -49,9 +50,6 @@ class QuizApiClient:
     # ---------- auth ----------
 
     async def login(self, email: str, password: str = "") -> Token:
-        # The dev token endpoint ignores the password but requires a non-empty
-        # form field, so fall back to a placeholder when none is given.
-        password = password if password else "stone-quiz"
         resp = await self._client.post(
             f"{self.base_url}/api/v1/auth/token",
             data={"username": email, "password": password},
@@ -119,3 +117,27 @@ class QuizApiClient:
                 pass
             raise QuizApiError(resp.status_code, detail)
         return resp.content
+
+    # ---------- admin ----------
+
+    async def admin_list_attempts(
+        self, token: str, quiz_id: str, level: str | None = None
+    ) -> list[AdminAttemptRow]:
+        params = {"level": level} if level else {}
+        resp = await self._client.get(
+            f"{self.base_url}/api/v1/admin/quizzes/{quiz_id}/attempts",
+            headers=self._headers(token),
+            params=params,
+        )
+        return [AdminAttemptRow.model_validate(item) for item in self._handle(resp)]
+
+    async def admin_question_stats(
+        self, token: str, quiz_id: str, level: str | None = None
+    ) -> list[QuestionStatRow]:
+        params = {"level": level} if level else {}
+        resp = await self._client.get(
+            f"{self.base_url}/api/v1/admin/quizzes/{quiz_id}/question-stats",
+            headers=self._headers(token),
+            params=params,
+        )
+        return [QuestionStatRow.model_validate(item) for item in self._handle(resp)]

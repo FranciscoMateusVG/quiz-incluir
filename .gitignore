@@ -3,3 +3,6 @@ __pycache__/
 .venv
 .flet
 app/backend/static
+monorepo-incluir
+.env
+Makefile

@@ -18,7 +18,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
-from quiz_shared.enums import LanguageLevel, MediaType, QuestionType, QuizCategory
+from quiz_shared.enums import (
+    CourseLevel,
+    LanguageLevel,
+    MediaType,
+    QuestionType,
+    QuizCategory,
+    UserRole,
+)
 
 
 class _Base(BaseModel):
@@ -88,7 +95,8 @@ class AttemptRead(_Base):
 class UserRead(_Base):
     id: UUID
     email: EmailStr
-    level: LanguageLevel
+    level: CourseLevel
+    role: UserRole
     created_at: datetime
     updated_at: datetime
 
@@ -96,3 +104,22 @@ class UserRead(_Base):
 class TokenRead(_Base):
     access_token: str
     token_type: str = "bearer"
+
+
+class AdminAttemptRow(_Base):
+    attempt_id: UUID
+    user_id: UUID
+    email: EmailStr
+    level: CourseLevel
+    score: float | None = None
+    max_score: float
+    finished: bool
+    finished_at: datetime | None = None
+
+
+class QuestionStatRow(_Base):
+    question_id: UUID
+    prompt: str
+    correct_count: int
+    incorrect_count: int
+    unanswered_count: int

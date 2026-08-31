@@ -1,3 +1,4 @@
+from app.api.routes.admin import router as admin
 from app.api.routes.answers import router as answers
 from app.api.routes.attempts import router as attempts
 from app.api.routes.auth import router as auth
@@ -8,6 +9,7 @@ from app.api.routes.quizzes import router as quizzes
 from app.api.routes.users import router as users
 
 __all__ = [
+    "admin",
     "answers",
     "attempts",
     "auth",

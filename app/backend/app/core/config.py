@@ -36,19 +36,25 @@ class Settings(BaseSettings):
                 return "postgresql+asyncpg://" + v.split("://", 1)[1]
         return v
 
-    GOOGLE_CLIENT_ID: str = Field(default="", description="Google OAuth2 Client ID")
-    GOOGLE_CLIENT_SECRET: str = Field(default="", description="Google OAuth2 Client Secret")
-    GOOGLE_REDIRECT_URI: str = Field(default="http://localhost:8000/api/v1/auth/callback", description="Google OAuth2 Redirect URI")
+    MONOREPO_AUTH_URL: str = Field(
+        default="http://localhost:3003",
+        description="Base URL of the Programa Incluir monorepo's auth API (hono-app / BetterAuth). "
+        "The quiz backend delegates all end-user authentication to this service.",
+    )
 
-    SECRET_KEY: str = Field(default="your-secret-key-change-in-production", description="JWT Secret Key")
-    ALGORITHM: str = Field(default="HS256", description="JWT Algorithm")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60 * 24 * 7, description="Access token expiration in minutes (7 days)")
+    SECRET_KEY: str = Field(
+        default="your-secret-key-change-in-production",
+        description="Session-signing key for the SQLAdmin backoffice panel only.",
+    )
 
     FRONTEND_URL: str = Field(default="http://localhost:3000", description="Frontend URL for CORS and OAuth redirects")
 
     ALL_CORS_ORIGINS: List[str] = Field(default=["*"], description="Allowed CORS origins")
 
-    DEFAULT_USER_LEVEL: str = Field(default="A1", description="Default language level for new users")
+    DEFAULT_USER_LEVEL: str = Field(default="B1", description="Default course level for new users")
+
+    ADMIN_USERNAME: str = Field(default="admin", description="SQLAdmin panel username")
+    ADMIN_PASSWORD: str = Field(default="change-me", description="SQLAdmin panel password")
 
 
 @lru_cache

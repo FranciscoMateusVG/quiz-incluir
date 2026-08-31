@@ -16,7 +16,9 @@ class AuthController:
         user = await self.api.me(token.access_token)
         self.state.token = token.access_token
         self.state.email = user.email
+        self.state.current_user = user
 
     def logout(self) -> None:
         self.state.token = None
         self.state.email = ""
+        self.state.current_user = None

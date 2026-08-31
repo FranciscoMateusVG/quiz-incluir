@@ -124,32 +124,35 @@ def LoginScreen(auth: AuthController):
                         else ft.Container(height=0)
                     ),
                 ),
-                ft.FilledButton(
-                    height=52,
-                    expand=True,
-                    disabled=loading,
-                    on_click=on_login,
-                    content=(
-                        ft.Row(
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            spacing=12,
-                            controls=[
-                                ft.ProgressRing(
-                                    width=18,
-                                    height=18,
-                                    stroke_width=2,
-                                    color=ft.Colors.WHITE,
-                                ),
-                                ft.Text("Signing in..."),
-                            ],
-                        )
-                        if loading
-                        else ft.Text(
-                            "Continue",
-                            size=16,
-                            weight=ft.FontWeight.W_600,
-                        )
-                    ),
+                ft.Row(
+                    [
+                        ft.FilledButton(
+                            expand=True,
+                            disabled=loading,
+                            on_click=on_login,
+                            content=(
+                                ft.Row(
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                    spacing=12,
+                                    controls=[
+                                        ft.ProgressRing(
+                                            width=18,
+                                            height=18,
+                                            stroke_width=2,
+                                            color=ft.Colors.WHITE,
+                                        ),
+                                        ft.Text("Signing in..."),
+                                    ],
+                                )
+                                if loading
+                                else ft.Text(
+                                    "Continue",
+                                    size=16,
+                                    weight=ft.FontWeight.W_600,
+                                )
+                            ),
+                        ),
+                    ],
                 ),
             ],
         ),

@@ -24,6 +24,7 @@ from app.core.database import async_session_maker, init_db
 from models import (
     Answer,
     LanguageLevel,
+    CourseLevel,
     MediaType,
     Question,
     QuestionMedia,
@@ -59,13 +60,13 @@ async def seed() -> None:
             return
 
         users = [
-            User(email="anna@example.com", level=LanguageLevel.A1),
-            User(email="ben@example.com", level=LanguageLevel.A1),
-            User(email="elena@example.com", level=LanguageLevel.A2),
-            User(email="carla@example.com", level=LanguageLevel.B1),
-            User(email="felipe@example.com", level=LanguageLevel.B2),
-            User(email="diego@example.com", level=LanguageLevel.C1),
-            User(email="giulia@example.com", level=LanguageLevel.C2),
+            User(email="anna@example.com", level=CourseLevel.B1),
+            User(email="ben@example.com", level=CourseLevel.B1),
+            User(email="elena@example.com", level=CourseLevel.B1),
+            User(email="carla@example.com", level=CourseLevel.B1),
+            User(email="felipe@example.com", level=CourseLevel.B1),
+            User(email="diego@example.com", level=CourseLevel.B1),
+            User(email="giulia@example.com", level=CourseLevel.B1),
         ]
         session.add_all(users)
 

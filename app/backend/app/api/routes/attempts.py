@@ -8,6 +8,7 @@ from sqlmodel import select
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.grading import normalize_score, normalized_max_score
 from app.core.pdf_report import build_attempt_report
 from app.crud import attempt as crud_attempt
 from app.models import QuizAttempt, User
@@ -18,15 +19,15 @@ router = APIRouter()
 
 
 async def _to_read(db: AsyncSession, attempt: QuizAttempt) -> AttemptRead:
-    max_score = await crud_attempt.get_max_score(db, attempt.quiz_id)
+    raw_max = await crud_attempt.get_max_score(db, attempt.quiz_id)
     return AttemptRead(
         id=attempt.id,
         quiz_id=attempt.quiz_id,
         user_id=attempt.user_id,
         started_at=attempt.started_at,
         finished_at=attempt.finished_at,
-        score=attempt.score,
-        max_score=max_score,
+        score=normalize_score(attempt.score, raw_max),
+        max_score=normalized_max_score(raw_max),
     )
 
 

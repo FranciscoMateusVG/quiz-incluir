@@ -1,7 +1,7 @@
 from pydantic import EmailStr, Field
 from sqlmodel import SQLModel
 
-from app.models import LanguageLevel
+from app.models import CourseLevel
 from quiz_shared.schemas import UserRead
 
 __all__ = ["UserBase", "UserCreate", "UserRead", "UserUpdate", "UserLevelUpdate"]
@@ -9,7 +9,7 @@ __all__ = ["UserBase", "UserCreate", "UserRead", "UserUpdate", "UserLevelUpdate"
 
 class UserBase(SQLModel):
     email: EmailStr
-    level: LanguageLevel = LanguageLevel.A1
+    level: CourseLevel = CourseLevel.B1
 
 
 class UserCreate(UserBase):
@@ -18,8 +18,8 @@ class UserCreate(UserBase):
 
 class UserUpdate(SQLModel):
     email: EmailStr | None = None
-    level: LanguageLevel | None = None
+    level: CourseLevel | None = None
 
 
 class UserLevelUpdate(SQLModel):
-    level: LanguageLevel = Field(description="New language level for the user")
+    level: CourseLevel = Field(description="New course level for the user")

@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from sqladmin import Admin
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.admin.auth import AdminAuth
+from app.admin.views import ALL_VIEWS
 from app.api.main import api_router
 from app.core.config import settings
-from app.core.database import init_db
+from app.core.database import engine, init_db
 
 
 API_V1_STR = "/api/v1"
@@ -35,9 +37,11 @@ if settings.ALL_CORS_ORIGINS:
         allow_headers=["*"],
     )
 
+# Session cookies for the SQLAdmin login below.
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+
 app.include_router(api_router, prefix=API_V1_STR)
-#app.mount(
-#    "/static",
-#    StaticFiles(directory=str(Path(__file__).parent / "static")),
-#    name="static",
-#)
+
+admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY))
+for view in ALL_VIEWS:
+    admin.add_view(view)

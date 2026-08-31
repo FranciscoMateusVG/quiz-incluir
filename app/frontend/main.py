@@ -6,6 +6,7 @@ import flet as ft
 
 import config
 import theme
+from controllers.admin_controller import AdminController
 from controllers.auth_controller import AuthController
 from controllers.quiz_controller import QuizController
 from router import make_app
@@ -37,8 +38,9 @@ def main(page: ft.Page) -> None:
     api = QuizApiClient(config.API_URL)
     auth = AuthController(state, api)
     quiz_controller = QuizController(state, api)
+    admin_controller = AdminController(state, api)
 
-    page.render_views(make_app(state, auth, quiz_controller))
+    page.render_views(make_app(state, auth, quiz_controller, admin_controller))
 
 
 if __name__ == "__main__":
