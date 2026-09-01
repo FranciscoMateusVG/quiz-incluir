@@ -14,10 +14,12 @@ from controllers.quiz_controller import QuizController
 from screens.admin_grades import AdminGradesScreen
 from screens.admin_quiz_list import AdminQuizListScreen
 from screens.login import LoginScreen
+from screens.not_found import NotFoundScreen
 from screens.picker import QuizPickerScreen
 from screens.question import QuestionScreen
 from screens.results import ResultsScreen
 from state.app_state import AppState
+from widgets.auth_guard import require_auth
 
 
 def make_app(
@@ -31,23 +33,27 @@ def make_app(
 
     @component
     def _picker():
-        return QuizPickerScreen(state, quiz)
+        return require_auth(state, lambda: QuizPickerScreen(state, quiz))
 
     @component
     def _question():
-        return QuestionScreen(state, quiz)
+        return require_auth(state, lambda: QuestionScreen(state, quiz))
 
     @component
     def _results():
-        return ResultsScreen(state, quiz)
+        return require_auth(state, lambda: ResultsScreen(state, quiz))
 
     @component
     def _admin_quizzes():
-        return AdminQuizListScreen(state, admin)
+        return require_auth(
+            state, lambda: AdminQuizListScreen(state, admin), admin_only=True
+        )
 
     @component
     def _admin_grades():
-        return AdminGradesScreen(state, admin)
+        return require_auth(
+            state, lambda: AdminGradesScreen(state, admin), admin_only=True
+        )
 
     @component
     def App():
@@ -60,6 +66,7 @@ def make_app(
                 Route(path="admin/grades", component=_admin_quizzes),
                 Route(path="admin/grades/:quiz_id", component=_admin_grades),
             ],
+            not_found=NotFoundScreen,
             manage_views=True,
         )
 
