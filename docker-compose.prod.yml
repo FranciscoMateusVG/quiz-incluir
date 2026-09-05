@@ -15,6 +15,9 @@
 #                        service and hono-app's container are confirmed to share the same
 #                        dokploy-network; otherwise use hono-app's public HTTPS URL
 #                        (e.g. https://new.programaincluir.org).
+#   ADMIN_USERNAME     — SQLAdmin panel login username (must not be left unset — the
+#                        app falls back to an insecure hardcoded default otherwise).
+#   ADMIN_PASSWORD     — SQLAdmin panel login password (generate: openssl rand -hex 16).
 
 services:
   quiz-incluir-backend-e17b8a:
@@ -29,6 +32,8 @@ services:
       DATABASE_URL: postgresql://quiz:${QUIZ_DB_PASSWORD}@quiz-incluir-db-e17b8a:5432/quiz
       SECRET_KEY: ${SECRET_KEY}
       MONOREPO_AUTH_URL: ${MONOREPO_AUTH_URL}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     depends_on:
       quiz-incluir-db-e17b8a:
         condition: service_healthy
