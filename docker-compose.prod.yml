@@ -3,9 +3,9 @@
 # Dokploy injects Traefik labels, port mappings, and dokploy-network at deploy
 # time — do NOT add them here. Local dev keeps using compose.yaml (unchanged).
 #
-# Public entrypoint: quiz-incluir-frontend-e17b8a (port 8080).
-# The backend is intentionally NOT publicly exposed — the Flet frontend calls
-# it server-side over the internal Docker network.
+# Public entrypoint: quiz-incluir-backend-e17b8a (port 8000). It serves both
+# the API and the Flet UI, mounted onto the same FastAPI app object
+# (app/backend/main.py) — there's no separate frontend service anymore.
 #
 # Required Dokploy-managed env vars (set in the Dokploy environment panel):
 #   QUIZ_DB_PASSWORD   — Postgres password for the dedicated quiz DB
@@ -17,19 +17,6 @@
 #                        (e.g. https://new.programaincluir.org).
 
 services:
-  quiz-incluir-frontend-e17b8a:
-    build:
-      context: .
-      dockerfile: docker/frontend.Dockerfile
-    container_name: quiz-incluir-frontend-e17b8a
-    restart: unless-stopped
-    environment:
-      QUIZ_API_URL: http://quiz-incluir-backend-e17b8a:8000
-      QUIZ_API_TIMEOUT: "15"
-    depends_on:
-      quiz-incluir-backend-e17b8a:
-        condition: service_started
-
   quiz-incluir-backend-e17b8a:
     build:
       context: .

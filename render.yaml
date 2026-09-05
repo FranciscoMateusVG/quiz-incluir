@@ -32,35 +32,7 @@ services:
         generateValue: true
       - key: MONOREPO_AUTH_URL
         sync: false
-      - key: FRONTEND_URL
-        fromService:
-          name: quiz-frontend
-          type: web
-          envVarKey: RENDER_EXTERNAL_URL
       - key: ADMIN_USERNAME
         sync: false
       - key: ADMIN_PASSWORD
         generateValue: true
-
-  - type: web
-    name: quiz-frontend
-    runtime: python
-    rootDir: app/frontend
-    plan: free
-    buildCommand: |
-      curl -LsSf https://astral.sh/uv/install.sh | sh
-      export PATH="$HOME/.local/bin:$PATH"
-      cd ../..
-      uv sync --frozen --package quiz-frontend
-    startCommand: |
-      export PATH="$HOME/.local/bin:$PATH"
-      cd ../..
-      uv run flet run app/frontend/main.py --web --host 0.0.0.0 --port $PORT -vv
-    healthCheckPath: /
-    autoDeploy: true
-    envVars:
-      - key: QUIZ_API_URL
-        fromService:
-          name: quiz-backend
-          type: web
-          envVarKey: RENDER_EXTERNAL_URL

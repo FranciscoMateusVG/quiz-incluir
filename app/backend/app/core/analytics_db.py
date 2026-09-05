@@ -14,17 +14,17 @@ aggregation, not for transactional reads/writes.
 
 from __future__ import annotations
 
+import re
+
 import duckdb
 
 from app.core.config import settings
 
 
 def _pg_conninfo() -> str:
-    """Strip the ``+asyncpg`` driver suffix; DuckDB's postgres scanner speaks libpq."""
-    url = settings.DATABASE_URL
-    if "+asyncpg" in url:
-        url = url.replace("postgresql+asyncpg://", "postgresql://")
-    return url
+    """Strip the SQLAlchemy driver suffix (e.g. ``+asyncpg``, ``+psycopg``);
+    DuckDB's postgres scanner speaks plain libpq URIs."""
+    return re.sub(r"^postgresql\+\w+://", "postgresql://", settings.DATABASE_URL)
 
 
 def get_analytics_connection() -> duckdb.DuckDBPyConnection:

@@ -23,6 +23,10 @@ dependencies = [
     "itsdangerous>=2.2.0",
     "duckdb>=1.1.0",
     "pytz>=2024.1",
+    "flet[all]>=0.86.5",
+    "flet-audio>=0.86.5",
+    "flet-video>=0.86.5",
+    "matplotlib>=3.8.0",
 ]
 
 [tool.uv]

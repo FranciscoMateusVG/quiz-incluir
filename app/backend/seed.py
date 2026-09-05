@@ -21,7 +21,7 @@ from sqlalchemy import delete
 from sqlmodel import func, select
 
 from app.core.database import async_session_maker, init_db
-from models import (
+from db_models import (
     Answer,
     LanguageLevel,
     CourseLevel,
