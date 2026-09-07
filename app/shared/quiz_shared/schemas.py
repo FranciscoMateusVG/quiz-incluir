@@ -16,10 +16,17 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
-from unicodedata import category
+from unicodedata import category, is_normalized
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    StringConstraints,
+)
 
 from quiz_shared.enums import (
     CourseLevel,
@@ -33,6 +40,10 @@ from quiz_shared.enums import (
 
 class _Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class _StrictWireBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 def _validate_canonical_identity(value: str) -> str:
@@ -53,6 +64,34 @@ CanonicalIdentityEmail = Annotated[
     str,
     StringConstraints(min_length=1, max_length=254),
     AfterValidator(_validate_canonical_identity),
+]
+
+
+def _validate_canonical_vocabulary_value(value: str) -> str:
+    """Reject text that is unsafe or non-canonical at an API boundary."""
+
+    if not value or value != value.strip() or not is_normalized("NFC", value):
+        raise ValueError("value must be nonempty, unpadded Unicode NFC")
+    if any(
+        ord(character) <= 0x1F
+        or 0x7F <= ord(character) <= 0x9F
+        or character in {"\u2028", "\u2029"}
+        or category(character) == "Cf"
+        for character in value
+    ):
+        raise ValueError("value contains unsafe Unicode characters")
+    return value
+
+
+CanonicalVocabularyText120 = Annotated[
+    StrictStr,
+    StringConstraints(min_length=1, max_length=120),
+    AfterValidator(_validate_canonical_vocabulary_value),
+]
+CanonicalVocabularyDefinition = Annotated[
+    StrictStr,
+    StringConstraints(min_length=1, max_length=240),
+    AfterValidator(_validate_canonical_vocabulary_value),
 ]
 
 
@@ -149,6 +188,36 @@ class AuthErrorResponse(_Base):
     code: AuthErrorCode
     message: str
     retry_after_seconds: int | None = None
+
+
+class VocabularyLookupRequest(_StrictWireBase):
+    # Normalized length is enforced after the bounded request body is read.
+    text: StrictStr
+
+
+class PronunciationRequest(_StrictWireBase):
+    lookup_id: UUID
+
+
+class VocabularyLookupResponse(_StrictWireBase):
+    lookup_id: UUID
+    source_text: CanonicalVocabularyText120
+    translation: CanonicalVocabularyText120
+    definition: CanonicalVocabularyDefinition
+
+
+class VocabularyErrorCode(StrEnum):
+    INVALID_INPUT = "invalid_input"
+    NO_RESULT = "no_result"
+    RATE_LIMITED = "rate_limited"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+
+
+class VocabularyErrorResponse(_StrictWireBase):
+    code: VocabularyErrorCode
+    message: StrictStr
+    retry_after_seconds: Annotated[int, Field(ge=1, le=2_678_400)] | None = None
 
 
 class AdminAttemptRow(_Base):

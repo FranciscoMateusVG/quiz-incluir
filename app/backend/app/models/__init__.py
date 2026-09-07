@@ -1,4 +1,7 @@
 from db_models import (
+    AIBudgetReservation,
+    AIDailyUsage,
+    AIMonthlyBudget,
     Answer,
     CourseLevel,
     LanguageLevel,
@@ -13,9 +16,14 @@ from db_models import (
     QuizQuestion,
     User,
     UserRole,
+    VocabularyLookupGrant,
 )
 
 __all__ = [
+    "AIMonthlyBudget",
+    "AIBudgetReservation",
+    "AIDailyUsage",
+    "VocabularyLookupGrant",
     "User",
     "Quiz",
     "QuizMedia",
