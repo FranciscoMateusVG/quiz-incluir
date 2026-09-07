@@ -20,15 +20,24 @@ from quiz_shared.enums import CourseLevel
 
 import theme
 from controllers.admin_controller import AdminController
+from controllers.auth_controller import AuthController
 from services.exceptions import QuizApiError
 from state.app_state import AppState
 from widgets.navbar import app_bar
 
 POLL_INTERVAL_S = 10
 
-_LEVEL_OPTIONS = [ft.DropdownOption(key="", text="All levels")] + [
-    ft.DropdownOption(key=level.value, text=level.value) for level in CourseLevel
+_LEVEL_CHOICES = [("", "All")] + [
+    (level.value, level.value) for level in CourseLevel
 ]
+
+
+def classify_load_error(error: Exception) -> tuple[bool, str]:
+    """Keep the permission and availability states mutually exclusive."""
+    if isinstance(error, QuizApiError) and error.status_code == 403:
+        return True, ""
+    detail = error.detail if isinstance(error, QuizApiError) else str(error)
+    return False, f"Could not load grades: {detail}"
 
 
 def _build_boxplot_png(attempts) -> str:
@@ -70,7 +79,9 @@ def _build_boxplot_png(attempts) -> str:
 
 
 @component
-def AdminGradesScreen(state: AppState, controller: AdminController):
+def AdminGradesScreen(
+    state: AppState, controller: AdminController, auth: AuthController
+):
     params = use_route_params()
     quiz_id = params.get("quiz_id", "")
 
@@ -82,27 +93,50 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
     forbidden, set_forbidden = use_state(False)
 
     task_ref = use_ref(None)
+    data_owner_ref = use_ref((state.token, state.auth_session_generation))
+
+    def session_snapshot() -> tuple[str | None, int]:
+        return state.token, state.auth_session_generation
+
+    def session_is_current(owner: tuple[str | None, int]) -> bool:
+        return owner == session_snapshot()
 
     async def load():
+        owner = session_snapshot()
         try:
             lvl = level or None
             new_attempts, new_stats = await asyncio.gather(
                 controller.list_attempts(quiz_id, lvl),
                 controller.get_question_stats(quiz_id, lvl),
             )
+            if (
+                new_attempts is None
+                or new_stats is None
+                or not session_is_current(owner)
+            ):
+                return
+            data_owner_ref.current = owner
             set_attempts(new_attempts)
             set_stats(new_stats)
             set_error("")
             set_forbidden(False)
         except QuizApiError as ex:
-            if ex.status_code == 403:
-                set_forbidden(True)
-            else:
-                set_error(f"Could not load grades: {ex.detail}")
+            if not session_is_current(owner):
+                return
+            next_forbidden, next_error = classify_load_error(ex)
+            data_owner_ref.current = owner
+            set_forbidden(next_forbidden)
+            set_error(next_error)
         except Exception as ex:
-            set_error(f"Could not load grades: {ex}")
+            if not session_is_current(owner):
+                return
+            next_forbidden, next_error = classify_load_error(ex)
+            data_owner_ref.current = owner
+            set_forbidden(next_forbidden)
+            set_error(next_error)
         finally:
-            set_loading(False)
+            if session_is_current(owner):
+                set_loading(False)
 
     async def start_polling():
         async def poll_loop():
@@ -117,22 +151,67 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
             task_ref.current.cancel()
             task_ref.current = None
 
-    use_effect(start_polling, [quiz_id, level], stop_polling)
-
-    def on_level_change(e):
-        set_level(e.control.value or "")
-        set_loading(True)
-
-    level_filter = ft.Dropdown(
-        label="Class (level)",
-        value=level,
-        options=_LEVEL_OPTIONS,
-        on_select=on_level_change,
-        width=220,
-        border_radius=theme.INPUT_RADIUS,
+    use_effect(
+        start_polling,
+        [quiz_id, level, state.token, state.auth_session_generation],
+        stop_polling,
     )
 
-    if forbidden:
+    local_data_is_current = session_is_current(data_owner_ref.current)
+    visible_attempts = attempts if local_data_is_current else []
+    visible_stats = stats if local_data_is_current else []
+    visible_loading = loading if local_data_is_current else True
+    visible_error = error if local_data_is_current else ""
+    visible_forbidden = forbidden if local_data_is_current else False
+
+    def choose_level(value: str):
+        def select(e):
+            set_level(value)
+            set_loading(True)
+
+        return select
+
+    # Flet 0.86.5's web Dropdown and PopupMenuButton both lose their options
+    # from Chromium's accessibility tree. Keep the complete filter visible as
+    # native buttons instead: every value is named, keyboard actionable, and
+    # remains at least 44px without relying on an overlay.
+    level_filter = ft.Column(
+        key="admin-level-filter",
+        controls=[
+            ft.Text(
+                "Class (level)",
+                size=13,
+                weight=ft.FontWeight.W_600,
+                color=theme.TEXT_SECONDARY,
+            ),
+            ft.Row(
+                controls=[
+                    (
+                        ft.FilledButton(
+                            label,
+                            key=f"admin-level-option-{value or 'all'}",
+                            height=theme.MIN_TARGET_SIZE,
+                            on_click=choose_level(value),
+                        )
+                        if value == level
+                        else ft.OutlinedButton(
+                            label,
+                            key=f"admin-level-option-{value or 'all'}",
+                            height=theme.MIN_TARGET_SIZE,
+                            on_click=choose_level(value),
+                        )
+                    )
+                    for value, label in _LEVEL_CHOICES
+                ],
+                wrap=True,
+                spacing=theme.SPACING_MD,
+                run_spacing=theme.SPACING_MD,
+            ),
+        ],
+        spacing=theme.SPACING_MD,
+    )
+
+    if visible_forbidden:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -149,7 +228,7 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
                 spacing=16,
             ),
         )
-    elif loading and not attempts and not stats:
+    elif visible_loading and not visible_attempts and not visible_stats:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -159,27 +238,31 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
                 spacing=16,
             ),
         )
-    elif error:
+    elif visible_error:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 [
                     ft.Icon(ft.Icons.ERROR_OUTLINE, color=theme.ERROR, size=50),
-                    ft.Text(error, color=theme.ERROR, text_align=ft.TextAlign.CENTER),
+                    ft.Text(
+                        visible_error,
+                        color=theme.ERROR,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=16,
             ),
         )
     else:
-        finished_count = sum(1 for a in attempts if a.finished)
+        finished_count = sum(1 for a in visible_attempts if a.finished)
         boxplot = theme.card(
             ft.Column(
                 [
                     ft.Text("Grade distribution", size=18, weight=ft.FontWeight.BOLD),
                     ft.Image(
-                        src=_build_boxplot_png(attempts),
+                        src=_build_boxplot_png(visible_attempts),
                         fit=ft.BoxFit.CONTAIN,
                         width=600,
                         height=350,
@@ -197,7 +280,9 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
             ft.Column(
                 [
                     ft.Text(
-                        "Per-question correct / wrong", size=18, weight=ft.FontWeight.BOLD
+                        "Per-question correct / wrong",
+                        size=18,
+                        weight=ft.FontWeight.BOLD,
                     ),
                     ft.DataTable(
                         columns=[
@@ -221,7 +306,7 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
                                     ft.DataCell(ft.Text(str(s.unanswered_count))),
                                 ]
                             )
-                            for s in stats
+                            for s in visible_stats
                         ],
                     ),
                 ],
@@ -258,7 +343,7 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
     return ft.View(
         route=f"/admin/grades/{quiz_id}",
         bgcolor=theme.BACKGROUND,
-        appbar=app_bar(state, title="Class Grades"),
+        appbar=app_bar(state, auth, title="Class Grades"),
         controls=[
             theme.responsive(
                 body,

@@ -22,7 +22,7 @@ class AnswerWidget:
         raise NotImplementedError
 
 
-def _option_row(input_control: ft.Control, text: str) -> ft.Row:
+def _option_row(input_control: ft.Control, text: str) -> ft.Control:
     """A radio/checkbox with its label rendered as a separate wrapping ``Text``.
 
     Flet's built-in ``Radio``/``Checkbox`` ``label=`` text does not wrap
@@ -40,9 +40,24 @@ def _option_row(input_control: ft.Control, text: str) -> ft.Row:
     did for a "tap anywhere on the row" affordance. Not worth the
     reliability cost for a slightly bigger tap target.
     """
-    return ft.Row(
-        [input_control, ft.Container(expand=True, content=ft.Text(text))],
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    input_control.height = theme.MIN_TARGET_SIZE
+    # Merge the detached, wrapping Text back into the selection control's
+    # semantics so browser automation and assistive tech get one named target.
+    return ft.Semantics(
+        label=text,
+        container=True,
+        content=ft.MergeSemantics(
+            content=ft.Container(
+                padding=ft.Padding.symmetric(vertical=2),
+                content=ft.Row(
+                    [
+                        input_control,
+                        ft.Container(expand=True, content=ft.Text(text)),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+        ),
     )
 
 
@@ -53,7 +68,10 @@ class MultipleChoice(AnswerWidget):
     def build(self, previous: dict | None) -> ft.Control:
         group = ft.RadioGroup(
             content=ft.Column(
-                [_option_row(ft.Radio(value=opt), opt) for opt in self.options],
+                [
+                    _option_row(ft.Radio(key=f"answer-choice-{i}", value=opt), opt)
+                    for i, opt in enumerate(self.options)
+                ],
                 spacing=4,
             )
         )
@@ -75,7 +93,13 @@ class MultiSelect(AnswerWidget):
     def build(self, previous: dict | None) -> ft.Control:
         selected_prev = set((previous or {}).get("selected") or [])
         checkboxes = [
-            ft.Checkbox(value=opt in selected_prev, data=opt) for opt in self.options
+            ft.Checkbox(
+                key=f"answer-multiselect-{i}",
+                value=opt in selected_prev,
+                data=opt,
+                semantics_label=opt,
+            )
+            for i, opt in enumerate(self.options)
         ]
         column = ft.Column(
             [_option_row(cb, opt) for cb, opt in zip(checkboxes, self.options)],
@@ -97,8 +121,18 @@ class TrueFalse(AnswerWidget):
         group = ft.RadioGroup(
             content=ft.Row(
                 [
-                    ft.Radio(value="true", label="True"),
-                    ft.Radio(value="false", label="False"),
+                    ft.Radio(
+                        key="answer-true",
+                        value="true",
+                        label="True",
+                        height=theme.MIN_TARGET_SIZE,
+                    ),
+                    ft.Radio(
+                        key="answer-false",
+                        value="false",
+                        label="False",
+                        height=theme.MIN_TARGET_SIZE,
+                    ),
                 ],
                 spacing=12,
             )
@@ -116,7 +150,8 @@ class TrueFalse(AnswerWidget):
 
 class ShortText(AnswerWidget):
     def build(self, previous: dict | None) -> ft.Control:
-        field = ft.TextField(
+        field = theme.text_field(
+            key="answer-text",
             value=(previous or {}).get("text", ""),
             label="Your answer",
             expand=True,
@@ -133,9 +168,7 @@ class ShortText(AnswerWidget):
 
 class Unsupported(AnswerWidget):
     def build(self, previous: dict | None) -> ft.Control:
-        self.control = ft.Text(
-            "Unsupported question type.", color=theme.ERROR
-        )
+        self.control = ft.Text("Unsupported question type.", color=theme.ERROR)
         return self.control
 
     def extract(self) -> dict | None:
