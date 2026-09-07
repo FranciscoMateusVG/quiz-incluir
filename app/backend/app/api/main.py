@@ -10,6 +10,7 @@ from app.api.routes import (
     quiz_media,
     quizzes,
     users,
+    vocabulary,
 )
 
 api_router = APIRouter()
@@ -22,3 +23,4 @@ api_router.include_router(media, prefix="/media", tags=["media"])
 api_router.include_router(quiz_media, prefix="/quiz-media", tags=["quiz-media"])
 api_router.include_router(attempts, prefix="/attempts", tags=["attempts"])
 api_router.include_router(answers, prefix="/answers", tags=["answers"])
+api_router.include_router(vocabulary, prefix="/vocabulary", tags=["vocabulary"])

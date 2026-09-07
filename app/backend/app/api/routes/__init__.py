@@ -7,6 +7,7 @@ from app.api.routes.questions import router as questions
 from app.api.routes.quiz_media import router as quiz_media
 from app.api.routes.quizzes import router as quizzes
 from app.api.routes.users import router as users
+from app.api.routes.vocabulary import router as vocabulary
 
 __all__ = [
     "admin",
@@ -18,4 +19,5 @@ __all__ = [
     "quiz_media",
     "quizzes",
     "users",
+    "vocabulary",
 ]

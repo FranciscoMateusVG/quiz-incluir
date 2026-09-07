@@ -13,6 +13,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.admin.auth import AdminAuth
 from app.admin.views import ALL_VIEWS
 from app.api.auth_errors import AuthAPIError, auth_api_error_handler
+from app.api.routes.vocabulary import (
+    VocabularyAPIError,
+    vocabulary_api_error_handler,
+)
 from app.api.main import api_router
 from app.core.client_ip import (
     CanonicalFletClientIpMiddleware,
@@ -54,6 +58,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_exception_handler(AuthAPIError, auth_api_error_handler)
+app.add_exception_handler(VocabularyAPIError, vocabulary_api_error_handler)
 
 # Set all CORS enabled origins
 if settings.ALL_CORS_ORIGINS:

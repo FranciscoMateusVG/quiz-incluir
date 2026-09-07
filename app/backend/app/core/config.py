@@ -2,7 +2,7 @@ from functools import lru_cache
 from ipaddress import IPv4Network, IPv6Network
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.client_ip import parse_trusted_proxy_cidrs
@@ -80,6 +80,17 @@ class Settings(BaseSettings):
         ge=1,
         le=3600,
         description="Disconnected Flet session retention. Production default/max is one hour.",
+    )
+
+    OPENAI_API_KEY: SecretStr | None = Field(
+        default=None,
+        description="Dedicated server-side Quiz provider credential. Vocabulary is disabled when absent.",
+    )
+    AI_MONTHLY_BUDGET_MICROUSD: int = Field(
+        default=5_000_000,
+        ge=1,
+        le=5_000_000,
+        description="Hard UTC-month provider budget in millionths of one US dollar.",
     )
 
     SECRET_KEY: str = Field(
