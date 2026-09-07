@@ -5,11 +5,16 @@ from flet import component, use_effect, use_state
 
 import theme
 from controllers.quiz_controller import QuizController
+from controllers.auth_controller import AuthController
 from state.app_state import AppState
 from widgets.feedback import notify
 from widgets.navbar import app_bar
 
-SECTION_ORDER = [("reading", "Reading"), ("listening", "Listening"), ("vocabulary_grammar", "Vocabulary")]
+SECTION_ORDER = [
+    ("reading", "Reading"),
+    ("listening", "Listening"),
+    ("vocabulary_grammar", "Vocabulary"),
+]
 
 _LEVEL_COLORS = {
     "A1": ("#E8F5E9", "#2E7D32"),
@@ -27,7 +32,7 @@ def _level_colors(level: str | None) -> tuple[str, str]:
 
 
 @component
-def QuizPickerScreen(state: AppState, controller: QuizController):
+def QuizPickerScreen(state: AppState, controller: QuizController, auth: AuthController):
     quizzes, set_quizzes = use_state([])
     error, set_error = use_state("")
     loading, set_loading = use_state(True)
@@ -35,7 +40,10 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
 
     async def load():
         try:
-            set_quizzes(await controller.list_quizzes())
+            loaded = await controller.list_quizzes()
+            if loaded is None:
+                return
+            set_quizzes(loaded)
             set_error("")
         except Exception as ex:
             set_error(f"Could not load quizzes: {ex}")
@@ -46,8 +54,8 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
 
     async def start(quiz):
         try:
-            await controller.start(quiz)
-            ft.context.page.navigate("/quiz/0")
+            if await controller.start(quiz):
+                ft.context.page.navigate("/quiz/0")
         except Exception as ex:
             notify(f"Could not start quiz: {ex}", error=True)
 
@@ -83,7 +91,8 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
     )
 
     search = ft.TextField(
-        hint_text="Search quizzes",
+        key="quiz-search",
+        label="Search quizzes",
         prefix_icon=ft.Icons.SEARCH,
         border_radius=theme.INPUT_RADIUS,
         border_color=theme.BORDER,
@@ -99,16 +108,22 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
         async def on_card_click(e, q=quiz):
             await start(q)
 
-        return ft.Container(
-            border_radius=theme.CARD_RADIUS,
-            bgcolor=theme.SURFACE,
-            border=ft.Border.all(1, theme.BORDER),
+        return ft.Button(
+            key=f"quiz-card-{quiz.id}",
+            tooltip=f"Abrir quiz {quiz.title}",
+            on_click=on_card_click,
+            elevation=0,
+            style=ft.ButtonStyle(
+                padding=0,
+                bgcolor=theme.SURFACE,
+                side=ft.BorderSide(1, theme.BORDER),
+                shape=ft.RoundedRectangleBorder(radius=theme.CARD_RADIUS),
+                animation_duration=250,
+            ),
             content=ft.Container(
-                padding=20,
                 border_radius=theme.CARD_RADIUS,
-                ink=True,
-                on_click=on_card_click,
-                animate=ft.Animation(250, ft.AnimationCurve.EASE_OUT),
+                bgcolor=theme.SURFACE,
+                padding=20,
                 content=ft.Row(
                     [
                         ft.Container(
@@ -198,9 +213,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
         else:
             col = {"xs": 12, "sm": 12, "md": 6, "lg": 6, "xl": 4}
         return ft.ResponsiveRow(
-            controls=[
-                ft.Container(col=col, content=_quiz_card(q)) for q in items
-            ],
+            controls=[ft.Container(col=col, content=_quiz_card(q)) for q in items],
             spacing=20,
             run_spacing=20,
         )
@@ -275,8 +288,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
         filtered = [
             q
             for q in quizzes
-            if not term
-            or term in f"{q.title} {q.description or ''}".lower()
+            if not term or term in f"{q.title} {q.description or ''}".lower()
         ]
 
         if not filtered:
@@ -310,9 +322,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
                 items = [q for q in filtered if (q.category or "").lower() == key]
                 if not items:
                     continue
-                sections.append(
-                    ft.Text(title, size=22, weight=ft.FontWeight.BOLD)
-                )
+                sections.append(ft.Text(title, size=22, weight=ft.FontWeight.BOLD))
                 sections.append(_quiz_grid(items))
             content = ft.Column(sections, spacing=20)
 
@@ -333,7 +343,7 @@ def QuizPickerScreen(state: AppState, controller: QuizController):
     return ft.View(
         route="/quizzes",
         bgcolor=theme.BACKGROUND,
-        appbar=app_bar(state),
+        appbar=app_bar(state, auth),
         controls=[
             theme.responsive(
                 body,

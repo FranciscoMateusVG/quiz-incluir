@@ -14,4 +14,7 @@ WORKDIR /app/app/backend
 # `alembic upgrade head` brings an existing DB to the latest revision and
 # fully creates the schema on a fresh DB (initial_schema revision). The app
 # additionally runs SQLModel create_all in its lifespan as a no-op safety net.
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn main:app --host 0.0.0.0 --port 8000"]
+# Client-IP trust is resolved once by the application. Leaving Uvicorn's
+# proxy-header middleware enabled would make raw-peer provenance depend on the
+# ambient FORWARDED_ALLOW_IPS value and could silently bypass that policy.
+CMD ["sh", "-c", "uv run alembic upgrade head && exec /app/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --no-proxy-headers"]
