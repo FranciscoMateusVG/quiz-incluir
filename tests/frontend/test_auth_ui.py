@@ -568,9 +568,16 @@ def test_login_component_tree_has_named_minimum_size_auth_controls(monkeypatch) 
 
     assert cpf.label == "CPF"
     assert cpf.keyboard_type == login_screen.ft.KeyboardType.NUMBER
+    assert cpf.autofocus is True
+    assert cpf.autocorrect is False
+    assert cpf.enable_suggestions is False
     assert cpf.size_constraints.min_height >= 44
     assert password.label == "Senha"
     assert password.password is True
+    assert password.autocorrect is False
+    assert password.enable_suggestions is False
+    assert callable(password.on_change)
+    assert callable(password.on_submit)
     assert password.size_constraints.min_height >= 44
     assert password_visibility.tooltip == "Mostrar senha"
     assert password_visibility.width >= 44
@@ -583,6 +590,162 @@ def test_login_component_tree_has_named_minimum_size_auth_controls(monkeypatch) 
     assert submit.height >= 44
     assert "Entrar no Quiz" in _text_values(submit)
     assert any(item.live_region and item.content is status for item in semantics)
+
+
+def test_login_cpf_change_handles_typing_mid_edit_and_end_delete(monkeypatch) -> None:
+    cpf_updates: list[str] = []
+    hook_values = iter(
+        [
+            ("", cpf_updates.append),
+            ("", lambda value: None),
+            (False, lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=lambda route: None
+    )
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(SimpleNamespace(state=AppState()))
+    cpf = _keyed(view, "login-cpf")
+    browser_values = [
+        "1",
+        "10",
+        "103",
+        "1032",
+        "103239",
+        "1032396",
+        "10323969623",
+        "103.23.696-23",
+        "103.239.696-23",
+        "103.239.696-2",
+        "103.239.696-23",
+    ]
+    for value in browser_values:
+        cpf.on_change(SimpleNamespace(control=SimpleNamespace(value=value)))
+
+    assert cpf_updates == [
+        "1",
+        "10",
+        "103",
+        "103.2",
+        "103.239",
+        "103.239.6",
+        "103.239.696-23",
+        "103.23.696-23",
+        "103.239.696-23",
+        "103.239.696-2",
+        "103.239.696-23",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("pasted", "expected"),
+    [
+        ("10323969623", "103.239.696-23"),
+        ("103.239.696-23", "103.239.696-23"),
+    ],
+)
+def test_login_cpf_change_accepts_supported_whole_value_paste_shapes(
+    pasted: str,
+    expected: str,
+    monkeypatch,
+) -> None:
+    cpf_updates: list[str] = []
+    hook_values = iter(
+        [
+            ("", cpf_updates.append),
+            ("", lambda value: None),
+            (False, lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=lambda route: None
+    )
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(SimpleNamespace(state=AppState()))
+    _keyed(view, "login-cpf").on_change(
+        SimpleNamespace(control=SimpleNamespace(value=pasted))
+    )
+
+    assert cpf_updates == [expected]
+
+
+def test_login_password_change_preserves_complete_edit_buffers(monkeypatch) -> None:
+    password_updates: list[str] = []
+    hook_values = iter(
+        [
+            ("", lambda value: None),
+            ("", password_updates.append),
+            (False, lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=lambda route: None
+    )
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(SimpleNamespace(state=AppState()))
+    password = _keyed(view, "login-password")
+    browser_values = ["p", "pa", "pas", "pass", "pas", "pass"]
+    for value in browser_values:
+        password.on_change(SimpleNamespace(control=SimpleNamespace(value=value)))
+
+    assert password_updates == browser_values
+
+
+def test_login_password_latest_rendered_buffer_reaches_submit(monkeypatch) -> None:
+    final_buffer = "input-buffer"
+    state = AppState(return_route="/quizzes")
+    received: list[tuple[str, str]] = []
+
+    class FakeAuth:
+        def __init__(self) -> None:
+            self.state = state
+
+        async def login(self, cpf: str, password: str) -> bool:
+            received.append((cpf, password))
+            self.state.current_user = SimpleNamespace(role=UserRole.STUDENT)
+            return True
+
+        def mark_validated_route(self, route: str) -> None:
+            pass
+
+    hook_values = iter(
+        [
+            ("103.239.696-23", lambda value: None),
+            (final_buffer, lambda value: None),
+            (False, lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    routes: list[str] = []
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=routes.append
+    )
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(FakeAuth())
+    asyncio.run(_keyed(view, "login-submit").on_click(None))
+
+    assert received == [("10323969623", final_buffer)]
+    assert routes == ["/quizzes"]
 
 
 @pytest.mark.parametrize(
