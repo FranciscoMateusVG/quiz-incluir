@@ -571,9 +571,18 @@ def test_login_component_tree_has_named_minimum_size_auth_controls(monkeypatch) 
 
     assert cpf.label == "CPF"
     assert cpf.keyboard_type == login_screen.ft.KeyboardType.NUMBER
+    assert cpf.autofocus is True
+    assert cpf.autocorrect is False
+    assert cpf.enable_suggestions is False
+    assert callable(cpf.on_change)
+    assert callable(cpf.on_blur)
     assert cpf.size_constraints.min_height >= 44
     assert password.label == "Senha"
     assert password.password is True
+    assert password.autocorrect is False
+    assert password.enable_suggestions is False
+    assert callable(password.on_change)
+    assert callable(password.on_submit)
     assert password.size_constraints.min_height >= 44
     assert password_visibility.tooltip == "Mostrar senha"
     assert password_visibility.width >= 44
@@ -1629,15 +1638,98 @@ def test_unavailable_gate_has_live_named_retry_and_no_protected_content(
     assert any(item.live_region for item in semantics)
 
 
+def test_cpf_editing_and_paste_keep_a_local_buffer_until_blur(monkeypatch) -> None:
+    cpf_ref = SimpleNamespace(current="")
+    password_ref = SimpleNamespace(current="")
+    password_visible_ref = SimpleNamespace(current=False)
+    setter_values: list[tuple[str, object]] = []
+    hook_values = iter(
+        [
+            ("", lambda value: setter_values.append(("error", value))),
+            (False, lambda value: setter_values.append(("loading", value))),
+        ]
+    )
+    page = SimpleNamespace(title="", route="/", update=lambda: None)
+    refs = iter([cpf_ref, password_ref, password_visible_ref])
+    monkeypatch.setattr(login_screen, "use_ref", lambda initial: next(refs))
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(SimpleNamespace(state=AppState()))
+    cpf_field = _keyed(view, "login-cpf")
+
+    # Typing, editing backwards, and either paste shape update only the local
+    # buffer. None schedules a component state render that could replay an
+    # older controlled value over the active edit.
+    for value in (
+        "0",
+        "09",
+        "091",
+        "0914",
+        "091",
+        "091.499.916-80",
+        "09149991680",
+    ):
+        cpf_field.on_change(SimpleNamespace(control=SimpleNamespace(value=value)))
+        assert cpf_ref.current == value
+        assert setter_values == []
+
+    updates: list[str] = []
+    control = SimpleNamespace(
+        value="09149991680", update=lambda: updates.append("update")
+    )
+    cpf_field.on_blur(SimpleNamespace(control=control))
+
+    assert cpf_ref.current == "091.499.916-80"
+    assert control.value == "091.499.916-80"
+    assert updates == ["update"]
+    assert setter_values == []
+
+
+def test_cpf_blur_does_not_silently_rewrite_malformed_or_already_masked_input(
+    monkeypatch,
+) -> None:
+    cpf_ref = SimpleNamespace(current="")
+    password_ref = SimpleNamespace(current="")
+    password_visible_ref = SimpleNamespace(current=False)
+    hook_values = iter(
+        [
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    page = SimpleNamespace(title="", route="/", update=lambda: None)
+    refs = iter([cpf_ref, password_ref, password_visible_ref])
+    monkeypatch.setattr(login_screen, "use_ref", lambda initial: next(refs))
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(SimpleNamespace(state=AppState()))
+    cpf_field = _keyed(view, "login-cpf")
+
+    for value in ("091.499.916-80", "091.499-916.80"):
+        updates: list[str] = []
+        control = SimpleNamespace(
+            value=value, update=lambda target=updates: target.append("update")
+        )
+        cpf_field.on_change(SimpleNamespace(control=control))
+        cpf_field.on_blur(SimpleNamespace(control=control))
+        assert cpf_ref.current == value
+        assert control.value == value
+        assert updates == []
+
+
 def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
     monkeypatch,
 ) -> None:
     setter_values: list[tuple[str, object]] = []
+    cpf_ref = SimpleNamespace(current="091.499.916-80")
     password_ref = SimpleNamespace(current="secret")
+    password_visible_ref = SimpleNamespace(current=False)
     hook_values = iter(
         [
-            ("091.499.916-80", lambda value: setter_values.append(("cpf", value))),
-            (False, lambda value: setter_values.append(("eye", value))),
             ("", lambda value: setter_values.append(("error", value))),
             (False, lambda value: setter_values.append(("loading", value))),
         ]
@@ -1662,17 +1754,28 @@ def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
         title="", route="/", update=lambda: None, navigate=routes.append
     )
     monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
-    monkeypatch.setattr(login_screen, "use_ref", lambda initial: password_ref)
+    refs = iter([cpf_ref, password_ref, password_visible_ref])
+    monkeypatch.setattr(login_screen, "use_ref", lambda initial: next(refs))
     monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
     monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
 
     view = login_screen.LoginScreen.__wrapped__(FakeAuth())
     eye = _keyed(view, "login-password-visibility")
+    eye_semantics = _keyed(view, "login-password-visibility-semantics")
+    password = _keyed(view, "login-password")
     submit = _keyed(view, "login-submit")
+    eye_semantics.update = lambda: None
+    password.update = lambda: None
     eye.on_click(None)
     asyncio.run(submit.on_click(None))
 
-    assert ("eye", True) in setter_values
+    assert password.password is False
+    assert password.value == "secret"
+    assert setter_values == [
+        ("loading", True),
+        ("error", ""),
+        ("loading", False),
+    ]
     assert validated == ["/quizzes"]
     assert routes == ["/quizzes"]
 
@@ -1680,7 +1783,9 @@ def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
 def test_password_keystrokes_keep_browser_buffer_until_reveal_and_submit(
     monkeypatch,
 ) -> None:
+    cpf_ref = SimpleNamespace(current="")
     password_ref = SimpleNamespace(current="")
+    password_visible_ref = SimpleNamespace(current=False)
     setter_values: list[tuple[str, object]] = []
     state = AppState(return_route="/quizzes")
     received: list[tuple[str, str]] = []
@@ -1701,21 +1806,12 @@ def test_password_keystrokes_keep_browser_buffer_until_reveal_and_submit(
     page = SimpleNamespace(
         title="", route="/", update=lambda: None, navigate=routes.append
     )
-    monkeypatch.setattr(login_screen, "use_ref", lambda initial: password_ref)
     monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
     monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
 
-    def render(*, password_visible: bool):
+    def render():
         hook_values = iter(
             [
-                (
-                    "091.499.916-80",
-                    lambda value: setter_values.append(("cpf", value)),
-                ),
-                (
-                    password_visible,
-                    lambda value: setter_values.append(("eye", value)),
-                ),
                 ("", lambda value: setter_values.append(("error", value))),
                 (False, lambda value: setter_values.append(("loading", value))),
             ]
@@ -1723,9 +1819,13 @@ def test_password_keystrokes_keep_browser_buffer_until_reveal_and_submit(
         monkeypatch.setattr(
             login_screen, "use_state", lambda initial: next(hook_values)
         )
+        refs = iter([cpf_ref, password_ref, password_visible_ref])
+        monkeypatch.setattr(login_screen, "use_ref", lambda initial: next(refs))
         return login_screen.LoginScreen.__wrapped__(FakeAuth())
 
-    first_view = render(password_visible=False)
+    first_view = render()
+    cpf_field = _keyed(first_view, "login-cpf")
+    cpf_field.on_change(SimpleNamespace(control=SimpleNamespace(value="09149991680")))
     password_field = _keyed(first_view, "login-password")
     final_value = "typing-sequence"
     for index in range(1, len(final_value) + 1):
@@ -1734,17 +1834,29 @@ def test_password_keystrokes_keep_browser_buffer_until_reveal_and_submit(
         )
 
     assert password_ref.current == final_value
+    assert cpf_ref.current == "09149991680"
     assert setter_values == []
 
-    _keyed(first_view, "login-password-visibility").on_click(None)
-    assert setter_values == [("eye", True)]
+    eye = _keyed(first_view, "login-password-visibility")
+    eye_semantics = _keyed(first_view, "login-password-visibility-semantics")
+    eye_semantics.update = lambda: None
+    password_field.update = lambda: None
+    eye.on_click(None)
+    assert password_field.value == final_value
+    assert password_field.password is False
+    assert eye.tooltip == "Ocultar senha"
+    assert eye_semantics.label == "Ocultar senha"
+    assert setter_values == []
 
-    revealed_view = render(password_visible=True)
-    revealed_password = _keyed(revealed_view, "login-password")
-    assert revealed_password.value == final_value
-    assert revealed_password.password is False
+    eye.on_click(None)
+    assert password_field.value == final_value
+    assert password_field.password is True
+    assert eye.tooltip == "Mostrar senha"
+    assert eye_semantics.label == "Mostrar senha"
+    assert password_ref.current == final_value
+    assert setter_values == []
 
-    asyncio.run(_keyed(revealed_view, "login-submit").on_click(None))
+    asyncio.run(_keyed(first_view, "login-submit").on_click(None))
 
     assert received == [("09149991680", final_value)]
     assert routes == ["/quizzes"]

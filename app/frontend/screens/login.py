@@ -102,9 +102,9 @@ def _brand_logo(*, width: int, height: int) -> ft.Semantics:
 
 @component
 def LoginScreen(auth: AuthController):
-    cpf, set_cpf = use_state("")
+    cpf_ref = use_ref("")
     password_ref = use_ref("")
-    password_visible, set_password_visible = use_state(False)
+    password_visible_ref = use_ref(False)
     error, set_error = use_state("")
     loading, set_loading = use_state(False)
 
@@ -126,7 +126,7 @@ def LoginScreen(auth: AuthController):
         if loading:
             return
         try:
-            cpf_digits = normalize_cpf_digits(cpf or "")
+            cpf_digits = normalize_cpf_digits(cpf_ref.current or "")
         except ValueError:
             set_error(_ERROR_MESSAGES["invalid_cpf"])
             return
@@ -155,7 +155,20 @@ def LoginScreen(auth: AuthController):
             set_loading(False)
 
     def on_cpf_change(e):
-        set_cpf(format_cpf(e.control.value or ""))
+        # Keep the live editing buffer in the browser-owned control. A remote
+        # component render on every key can replay an older value and move the
+        # caret while the user is still typing, deleting, or pasting.
+        cpf_ref.current = e.control.value or ""
+
+    def on_cpf_blur(e):
+        # Apply the familiar mask only after editing finishes. This is a
+        # control-local update, not a component render; unexpected input stays
+        # visible so submit validation can reject it honestly.
+        formatted = format_cpf(cpf_ref.current or "")
+        cpf_ref.current = formatted
+        if e.control.value != formatted:
+            e.control.value = formatted
+            e.control.update()
 
     def on_password_change(e):
         # Let the browser own the live editing buffer. Scheduling a remote
@@ -164,14 +177,31 @@ def LoginScreen(auth: AuthController):
         password_ref.current = e.control.value or ""
 
     def toggle_password(e):
-        set_password_visible(not password_visible)
+        # Toggle the mounted field in place. Re-rendering the component swaps
+        # password-mode controls remotely and can overwrite the browser's live
+        # editing buffer, particularly when switching back to hidden mode.
+        password_visible_ref.current = not password_visible_ref.current
+        password_ref.current = password_field.value = password_ref.current or ""
+        password_field.password = not password_visible_ref.current
+        label = "Ocultar senha" if password_visible_ref.current else "Mostrar senha"
+        password_button.icon = (
+            ft.Icons.VISIBILITY_OFF_OUTLINED
+            if password_visible_ref.current
+            else ft.Icons.VISIBILITY_OUTLINED
+        )
+        password_button.tooltip = label
+        password_action.label = label
+        password_action.update()
+        password_field.update()
 
-    password_label = "Ocultar senha" if password_visible else "Mostrar senha"
+    password_label = (
+        "Ocultar senha" if password_visible_ref.current else "Mostrar senha"
+    )
     password_button = theme.icon_action(
         key="login-password-visibility",
         icon=(
             ft.Icons.VISIBILITY_OFF_OUTLINED
-            if password_visible
+            if password_visible_ref.current
             else ft.Icons.VISIBILITY_OUTLINED
         ),
         tooltip=password_label,
@@ -194,8 +224,9 @@ def LoginScreen(auth: AuthController):
     cpf_field = theme.text_field(
         key="login-cpf",
         width=theme.FORM_MAX_WIDTH,
-        value=cpf,
+        value=cpf_ref.current,
         on_change=on_cpf_change,
+        on_blur=on_cpf_blur,
         label="CPF",
         hint_text="000.000.000-00",
         prefix_icon=ft.Icons.BADGE_OUTLINED,
@@ -222,7 +253,7 @@ def LoginScreen(auth: AuthController):
             min_width=theme.MIN_TARGET_SIZE,
             min_height=theme.MIN_TARGET_SIZE,
         ),
-        password=not password_visible,
+        password=not password_visible_ref.current,
         can_reveal_password=False,
         on_submit=on_login,
         autocorrect=False,
