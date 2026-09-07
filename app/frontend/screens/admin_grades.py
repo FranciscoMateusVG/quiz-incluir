@@ -27,8 +27,8 @@ from widgets.navbar import app_bar
 
 POLL_INTERVAL_S = 10
 
-_LEVEL_OPTIONS = [ft.DropdownOption(key="", text="All levels")] + [
-    ft.DropdownOption(key=level.value, text=level.value) for level in CourseLevel
+_LEVEL_CHOICES = [("", "All levels")] + [
+    (level.value, level.value) for level in CourseLevel
 ]
 
 
@@ -164,19 +164,78 @@ def AdminGradesScreen(
     visible_error = error if local_data_is_current else ""
     visible_forbidden = forbidden if local_data_is_current else False
 
-    def on_level_change(e):
-        set_level(e.control.value or "")
-        set_loading(True)
+    def choose_level(value: str):
+        def select(e):
+            set_level(value)
+            set_loading(True)
 
-    level_filter = ft.Dropdown(
+        return select
+
+    selected_level_label = next(
+        label for value, label in _LEVEL_CHOICES if value == level
+    )
+    # Flet 0.86.5's web Dropdown paints two unnamed buttons and exposes no
+    # named combobox/listbox node in Chromium's accessibility tree. Use the
+    # already-proven native PopupMenuButton pattern instead: the trigger is a
+    # real keyboard-actionable button, its tooltip supplies one stable AX
+    # name, and each 48px menu item performs the same level-filter update.
+    level_filter = ft.PopupMenuButton(
         key="admin-level-filter",
-        label="Class (level)",
-        value=level,
-        options=_LEVEL_OPTIONS,
-        on_select=on_level_change,
+        tooltip="Class (level)",
+        menu_position=ft.PopupMenuPosition.UNDER,
+        items=[
+            ft.PopupMenuItem(
+                key=f"admin-level-option-{value or 'all'}",
+                content=label,
+                checked=value == level,
+                height=theme.CONTROL_HEIGHT,
+                on_click=choose_level(value),
+            )
+            for value, label in _LEVEL_CHOICES
+        ],
         width=220,
         height=theme.CONTROL_HEIGHT,
-        border_radius=theme.INPUT_RADIUS,
+        padding=0,
+        content=ft.Semantics(
+            exclude_semantics=True,
+            content=ft.Container(
+                width=220,
+                height=theme.CONTROL_HEIGHT,
+                padding=ft.Padding.symmetric(horizontal=12),
+                border=ft.Border.all(1, theme.BORDER),
+                border_radius=theme.INPUT_RADIUS,
+                bgcolor=theme.SURFACE,
+                alignment=ft.Alignment.CENTER,
+                content=ft.Row(
+                    [
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    "Class (level)",
+                                    size=11,
+                                    color=theme.TEXT_SECONDARY,
+                                ),
+                                ft.Text(
+                                    selected_level_label,
+                                    size=14,
+                                    color=theme.TEXT_PRIMARY,
+                                ),
+                            ],
+                            spacing=0,
+                            tight=True,
+                            expand=True,
+                        ),
+                        ft.Icon(
+                            ft.Icons.ARROW_DROP_DOWN,
+                            size=22,
+                            color=theme.MUTED_700,
+                        ),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+        ),
     )
 
     if visible_forbidden:

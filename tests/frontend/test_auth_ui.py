@@ -1800,10 +1800,16 @@ def test_admin_filter_callback_and_mutually_exclusive_error_classifier(
         state, SimpleNamespace(), SimpleNamespace()
     )
     level_filter = _keyed(view, "admin-level-filter")
-    level_filter.on_select(SimpleNamespace(control=SimpleNamespace(value="B2")))
+    b2_option = _keyed(view, "admin-level-option-B2")
+    b2_option.on_click(None)
 
     assert selected == ["B2"]
+    assert isinstance(level_filter, admin_grades_screen.ft.PopupMenuButton)
+    assert level_filter.tooltip == "Class (level)"
     assert level_filter.height >= 44
+    assert level_filter.content.exclude_semantics is True
+    assert b2_option.height >= 44
+    assert b2_option.content == "B2"
     assert admin_grades_screen.classify_load_error(QuizApiError(403, "denied")) == (
         True,
         "",
