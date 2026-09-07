@@ -31,6 +31,10 @@ paths:
         timeoutSeconds: 10
         absoluteJourneyDeadlineSeconds: 12
         maximumBufferedResponseBytes: 65536
+        ambientConfiguration: >-
+          OPENAI_API_KEY is the sole permitted OPENAI_* process variable.
+          Any tenant, project, admin, custom-header, base-URL, or SDK logging
+          variable fails settings validation before SDK import.
         responseSchema:
           type: object
           additionalProperties: false
@@ -65,6 +69,7 @@ paths:
         dailyLimitPerVerifiedUserId: 100
         monthlyLimitMaximumMicrousd: 5000000
         behaviorOnStorageFailure: fail-closed-without-provider-call
+        behaviorOnConfiguredStoredLimitMismatch: fail-closed-without-provider-call
         reservation: atomic-worst-case-before-provider-call
         settlement: actual-usage-on-success-with-unknown-charge-left-reserved
         lookupPricing:
@@ -227,7 +232,9 @@ components:
           description: >-
             One NFC English equivalent. The strict provider result and final
             response reject C0/C1 controls, DEL, U+2028/U+2029, and Unicode Cf
-            format characters and enforce length by Unicode code point.
+            format characters, require already-canonical single ASCII spaces,
+            and enforce length by Unicode code point. Successful lookup output
+            is therefore valid for the server-resolved pronunciation path.
         definition:
           type: string
           minLength: 1

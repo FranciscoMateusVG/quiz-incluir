@@ -7,13 +7,20 @@ The authoritative HTTP contract is
 
 - `OPENAI_API_KEY`: dedicated Quiz server credential. If absent or empty, both
   vocabulary operations return typed `503 provider_unavailable`; there is no
-  fallback provider.
+  fallback provider. It is the only permitted `OPENAI_*` process variable;
+  tenant, project, admin, custom-header, base-URL, and SDK logging variables
+  fail application settings validation before the OpenAI SDK is imported.
 - `AI_MONTHLY_BUDGET_MICROUSD`: integer in `1..5000000`, default `5000000`.
   Configuration above US$5 fails application startup validation.
 
 The model, voice, provider origin, paths, timeouts, token caps, and response
 caps are code constants, not environment inputs. The provider client disables
 ambient HTTP proxies, redirects, and SDK retries.
+
+Every reservation compares the configured monthly limit with the persisted
+current-month row. A mismatch fails closed before a provider call; changing the
+limit therefore requires an explicit, reviewed database reconciliation rather
+than silently retaining a stale cap.
 
 ## Deploy and verification
 

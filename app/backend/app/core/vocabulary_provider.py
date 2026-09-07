@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
+import sys
 from dataclasses import dataclass
-from typing import Protocol
+from types import ModuleType
+from typing import Any, Protocol
 
 import httpx
-from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.core.ai_budget import LOOKUP_MAX_INPUT_TOKENS, LOOKUP_MAX_OUTPUT_TOKENS
@@ -31,6 +34,37 @@ _SYSTEM_PROMPT = (
     "Return only the required JSON fields. Do not include alternatives, "
     "examples, phonetics, markdown, or personal data."
 )
+
+
+def _ambient_openai_variables() -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            name
+            for name in os.environ
+            if name.startswith("OPENAI_") and name != "OPENAI_API_KEY"
+        )
+    )
+
+
+def _reject_ambient_openai_configuration() -> None:
+    if _ambient_openai_variables():
+        raise ProviderUnavailable(
+            "ambient provider configuration is forbidden",
+            charge_known_absent=True,
+        )
+
+
+def _import_openai_sdk() -> ModuleType:
+    """Import the SDK only after ambient controls have been rejected."""
+
+    _reject_ambient_openai_configuration()
+    return importlib.import_module("openai")
+
+
+def AsyncOpenAI(**kwargs: Any) -> Any:
+    """Patchable, lazy constructor retained for deterministic adapter tests."""
+
+    return _import_openai_sdk().AsyncOpenAI(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -148,7 +182,9 @@ def _retry_after(headers: httpx.Headers) -> int | None:
 
 
 def _map_provider_exception(exc: Exception) -> ProviderFailure:
-    if isinstance(exc, APIStatusError):
+    sdk = sys.modules.get("openai")
+    api_status_error = getattr(sdk, "APIStatusError", None)
+    if isinstance(api_status_error, type) and isinstance(exc, api_status_error):
         if exc.status_code == 429:
             return ProviderRateLimited(
                 "provider rate limited",
@@ -166,7 +202,12 @@ def _map_provider_exception(exc: Exception) -> ProviderFailure:
         return ProviderUnavailable(
             "provider server unavailable", charge_known_absent=False
         )
-    if isinstance(exc, (APIConnectionError, APITimeoutError, httpx.HTTPError)):
+    sdk_transport_errors = tuple(
+        error_type
+        for name in ("APIConnectionError", "APITimeoutError")
+        if isinstance((error_type := getattr(sdk, name, None)), type)
+    )
+    if isinstance(exc, (*sdk_transport_errors, httpx.HTTPError)):
         return ProviderUnavailable(
             "provider transport unavailable", charge_known_absent=False
         )
@@ -208,6 +249,7 @@ class OpenAIVocabularyProvider:
         self._api_key = api_key
 
     async def lookup(self, text: str) -> ProviderLookupResult:
+        _reject_ambient_openai_configuration()
         parameters = _lookup_parameters(text)
         http_client = _new_provider_http_client()
         client = AsyncOpenAI(
@@ -289,6 +331,7 @@ class OpenAIVocabularyProvider:
         )
 
     async def pronounce(self, translation: str) -> bytes:
+        _reject_ambient_openai_configuration()
         http_client = _new_provider_http_client()
         client = AsyncOpenAI(
             api_key=self._api_key,
