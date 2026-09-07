@@ -29,18 +29,22 @@ services:
     container_name: quiz-incluir-backend-staging
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://quiz:${QUIZ_DB_PASSWORD}@quiz-incluir-db-staging:5432/quiz
+      DATABASE_URL: postgresql+asyncpg://quiz:${QUIZ_DB_PASSWORD:?set in the Dokploy env panel}@quiz-incluir-db-staging:5432/quiz
       # Server-side relay to the ISOLATED Hono on the internal network.
       # Not a public host: quiz never makes a browser-side auth call.
-      MONOREPO_AUTH_URL: http://quiz-staging-hono:3003
-      SECRET_KEY: ${SECRET_KEY}
-      ADMIN_USERNAME: ${ADMIN_USERNAME}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # Allowlisted host, reached via the hono-app alias that exists ONLY on
+      # quiz-staging-net. The alias is deliberately NOT published on any shared
+      # network — prod already claims hono-app on dokploy-network, and a second
+      # claimant there would be ambiguous and dangerous.
+      MONOREPO_AUTH_URL: http://hono-app:3003
+      SECRET_KEY: ${SECRET_KEY:?set in the Dokploy env panel}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?set in the Dokploy env panel}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in the Dokploy env panel}
       # DENY-ALL during preparation. This is the EXACT observed Traefik peer
       # as a /32 (or /128), supplied only after the network is rendered —
       # NEVER a network range such as 10.0.1.0/24, which would trust every
       # container able to reach that network.
-      TRUSTED_PROXY_CIDRS: ""
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
     depends_on:
       quiz-incluir-db-staging:
         condition: service_healthy
@@ -54,7 +58,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: quiz
-      POSTGRES_PASSWORD: ${QUIZ_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${QUIZ_DB_PASSWORD:?set in the Dokploy env panel}
       POSTGRES_DB: quiz
     volumes:
       - quiz_staging_pgdata:/var/lib/postgresql/data
@@ -68,17 +72,32 @@ services:
   # ── Isolated Incluir BetterAuth. INTERNAL ONLY — no domain, no cert. ────
   # Image is built from the PINNED monorepo revision (see STAGING-NOTES.md);
   # Dokploy cannot build cross-repo, so the tag must exist on the host.
+  # One-shot schema migration. The pinned CI stack runs exactly this before
+  # Hono starts; without it Hono comes up against an EMPTY database and every
+  # auth call fails in a way that looks like a credential problem.
+  quiz-staging-hono-migrator:
+    image: ${STAGING_HONO_IMAGE:?set in the Dokploy env panel}
+    container_name: quiz-staging-hono-migrator
+    restart: "no"
+    command: ["node", "/app/dist/scripts/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://e2e:${STAGING_HONO_DB_PASSWORD:?set in the Dokploy env panel}@quiz-staging-hono-db:5432/incluir
+    depends_on:
+      quiz-staging-hono-db:
+        condition: service_healthy
+    networks: [quiz-staging-net]
+
   quiz-staging-hono:
-    image: ${STAGING_HONO_IMAGE}
+    image: ${STAGING_HONO_IMAGE:?set in the Dokploy env panel}
     container_name: quiz-staging-hono
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://e2e:${STAGING_HONO_DB_PASSWORD}@quiz-staging-hono-db:5432/incluir
+      DATABASE_URL: postgres://e2e:${STAGING_HONO_DB_PASSWORD:?set in the Dokploy env panel}@quiz-staging-hono-db:5432/incluir
       REDIS_URL: redis://quiz-staging-hono-redis:6379
       # Internal origin: quiz calls this server-side, so the auth URL is the
       # in-network address. No public auth host is required by the flow.
-      BETTER_AUTH_URL: http://quiz-staging-hono:3003
-      BETTER_AUTH_SECRET: ${STAGING_BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: http://hono-app:3003
+      BETTER_AUTH_SECRET: ${STAGING_BETTER_AUTH_SECRET:?set in the Dokploy env panel}
       # No browser hits Hono directly in this topology, so no CORS origin is
       # required. If a browser-side auth call is ever introduced, this and the
       # public-exposure decision must both be revisited.
@@ -91,12 +110,17 @@ services:
         condition: service_healthy
       quiz-staging-hono-redis:
         condition: service_healthy
+      quiz-staging-hono-migrator:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 40
-    networks: [quiz-staging-net]
+    networks:
+      quiz-staging-net:
+        # The allowlisted name, scoped to THIS network only.
+        aliases: [hono-app]
 
   quiz-staging-hono-db:
     image: postgres:16-alpine
@@ -104,7 +128,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: e2e
-      POSTGRES_PASSWORD: ${STAGING_HONO_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${STAGING_HONO_DB_PASSWORD:?set in the Dokploy env panel}
       POSTGRES_DB: incluir
     volumes:
       - quiz_staging_hono_pgdata:/var/lib/postgresql/data

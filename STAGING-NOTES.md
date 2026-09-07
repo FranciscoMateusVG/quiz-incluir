@@ -31,11 +31,15 @@ Pinned revision: `9cb605fc2cc63930a9fdf4f73ccec3ec05c6daad`, the same commit
 Incluir production runs, built from `apps/hono-app/Dockerfile`. This is the same
 artifact already proven locally in compose project `quiz-authfix-ztid5`.
 
-Resolve by either (a) building the image on the host from that pinned revision
-and setting `STAGING_HONO_IMAGE` to the local tag, or (b) publishing it to a
-registry the host can pull. That decision is not made here.
+**Resolved:** bounded **build-on-target** from `9cb605fc` — no new registry is
+introduced. Build the Hono image on the target host from that pinned revision,
+then set `STAGING_HONO_IMAGE` to the resulting local tag. The existing staging
+approval covers this operational choice.
 
 ## Required environment (set in the Dokploy panel, never committed)
+
+Every variable below except `TRUSTED_PROXY_CIDRS` uses `${VAR:?}`, so the stack
+**refuses to start** rather than coming up with a silently missing secret.
 
 | Variable | Notes |
 |---|---|
@@ -45,7 +49,7 @@ registry the host can pull. That decision is not made here.
 | `STAGING_HONO_IMAGE` | tag of the Hono image built from the pinned revision |
 | `STAGING_HONO_DB_PASSWORD` | staging-only |
 | `STAGING_BETTER_AUTH_SECRET` | staging-only; must NOT be a production value |
-| `TRUSTED_PROXY_CIDRS` | **Leave EMPTY during preparation — empty is deny-all.** |
+| `TRUSTED_PROXY_CIDRS` | Injectable via `${TRUSTED_PROXY_CIDRS:-}`. **Leave UNSET during preparation — empty is deny-all.** Set later to the exact observed peer host route. |
 
 ## TRUSTED_PROXY_CIDRS — get this right
 
@@ -64,10 +68,20 @@ over from production.
 - **Prove network membership from the SOURCE side** before trusting any
   in-container `hono-app:3003/health` result. A health check run from a *peer*
   container proves that peer's connectivity, not the backend's.
-- **Quiz has no real HTTP health endpoint.** `/openapi.json` returns `paths {}`,
-  and `/health`, `/login`, `/admin` all return the same 200 SPA shell. An HTTP
-  200 proves the shell is served and would pass against a dead application
-  layer. Health evidence must be container- or websocket-level.
+- **Do not use an HTTP 200 as liveness.** Verified in the pinned candidate's
+  `app/backend/main.py`: the app is constructed with `openapi_url=None`, and
+  `/docs`, `/redoc`, `/openapi.json` are explicitly filtered out — so on THIS
+  build those paths are **not served at all**. Real routes are the API router
+  under `/api/v1`, the SQLAdmin panel, and the Flet app mounted as a root
+  catch-all. **There is no `/health` route anywhere in the source** — grep
+  confirms none. So any 200 from an unrouted path is the Flet catch-all
+  answering, which proves the shell is served and would pass against a dead
+  application layer. Health evidence must be container- or websocket-level.
+
+  *(Correction: earlier notes claimed `/openapi.json` returns `paths {}` and
+  that `/docs` answers 200. That was measured against the OLD production
+  container — the pre-merge Flet frontend on 8080 — and does NOT describe this
+  combined build. Do not carry observations between the two.)*
 - The merged image serves **port 8000**. Production's domain still targets a
   removed frontend service on 8080 — that retarget is `aperture-rp14v`, gated,
   and is **not** part of staging.
