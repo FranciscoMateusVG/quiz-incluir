@@ -15,6 +15,7 @@ _PRIVATE_AUTH_NETWORKS = (
     ip_network("192.168.0.0/16"),
     ip_network("fc00::/7"),
 )
+_ALLOWED_AUTH_SERVICE_NAMES = {"hono-app", "localhost"}
 
 
 class Settings(BaseSettings):
@@ -73,22 +74,22 @@ class Settings(BaseSettings):
         try:
             address = ip_address(host)
         except ValueError:
-            # Current composition uses the single-label Docker service name
-            # `hono-app`; public multi-label fallbacks are intentionally denied.
-            if "." in host and host != "localhost":
-                raise ValueError("MONOREPO_AUTH_URL must not be a public hostname")
+            if host not in _ALLOWED_AUTH_SERVICE_NAMES:
+                raise ValueError("MONOREPO_AUTH_URL hostname is not allowlisted")
         else:
             private_address = any(
                 address.version == network.version and address in network
                 for network in _PRIVATE_AUTH_NETWORKS
             )
-            if not (private_address or address.is_loopback or address.is_link_local):
-                raise ValueError("MONOREPO_AUTH_URL must not be a public IP address")
+            if not (private_address or address.is_loopback):
+                raise ValueError(
+                    "MONOREPO_AUTH_URL must use loopback or RFC1918/ULA private IP"
+                )
         return v.rstrip("/")
 
     TRUSTED_PROXY_CIDRS: str = Field(
         default="",
-        description="Comma-separated, narrow CIDRs for the public reverse proxies whose "
+        description="Comma-separated exact /32 or /128 public reverse-proxy peers whose "
         "X-Forwarded-For chains may be interpreted. Empty trusts no proxies.",
     )
 

@@ -14,7 +14,7 @@ raw-peer trust depend on ambient `FORWARDED_ALLOW_IPS` state.
 | `SECRET_KEY` | Non-default SQLAdmin session-signing secret. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Non-default SQLAdmin credentials. This Phase does not change SQLAdmin auth. |
 | `MONOREPO_AUTH_URL` | Private HTTP origin for the existing Hono/BetterAuth service, such as `http://hono-app:3003`. Public hostnames/IPs and URL credentials/query/fragment are rejected. |
-| `TRUSTED_PROXY_CIDRS` | Narrow comma-separated CIDRs for public Traefik peer(s), supplied per environment by infrastructure. Empty trusts no proxies; invalid or wildcard CIDRs fail startup. |
+| `TRUSTED_PROXY_CIDRS` | Comma-separated exact `/32` or `/128` public Traefik peers, supplied per environment by infrastructure. Empty trusts no proxies; broad or loopback entries fail startup. |
 | `FLET_SESSION_TIMEOUT_SECONDS` | Optional. Defaults to and is capped at 3,600 seconds. Short values are for isolated expiry testing only. |
 
 `TRUSTED_PROXY_CIDRS` authorizes only the public `X-Forwarded-For` chain used
@@ -22,6 +22,8 @@ to set the server-owned Flet `Page.client_ip`. It never authorizes
 `X-Quiz-Client-IP`. That dedicated header is accepted only from an original
 socket peer of exactly `127.0.0.1` or `::1` for the same-process Flet relay.
 Missing or unprovable peer metadata cannot gain relay authority.
+An exact-loopback caller with absent or malformed dedicated metadata uses the
+shared safe bucket and never falls through to public XFF interpretation.
 
 ## Deployment verification
 

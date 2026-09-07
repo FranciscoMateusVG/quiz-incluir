@@ -13,10 +13,10 @@
 #   MONOREPO_AUTH_URL  — base URL of the Programa Incluir monorepo's auth API (hono-app).
 #                        Must be a private HTTP service origin reachable on a shared network
 #                        (for example http://hono-app:3003). Public fallbacks are rejected.
-#   TRUSTED_PROXY_CIDRS — narrow comma-separated CIDRs for the public Traefik hop(s).
+#   TRUSTED_PROXY_CIDRS — comma-separated exact /32 or /128 public Traefik peer(s).
 #                        Required for per-client sign-in buckets in deployed environments.
 #                        Empty trusts no proxy and safely attributes requests to the socket
-#                        peer; wildcard CIDRs are rejected at application startup.
+#                        peer; broad or loopback CIDRs are rejected at application startup.
 #   ADMIN_USERNAME     — SQLAdmin panel login username (must not be left unset — the
 #                        app falls back to an insecure hardcoded default otherwise).
 #   ADMIN_PASSWORD     — SQLAdmin panel login password (generate: openssl rand -hex 16).

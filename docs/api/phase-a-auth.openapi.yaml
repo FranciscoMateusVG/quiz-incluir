@@ -26,6 +26,7 @@ paths:
             IP, and is ignored for public/non-loopback callers.
       requestBody:
         required: true
+        x-max-body-bytes: 2048
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -35,6 +36,7 @@ paths:
               properties:
                 username:
                   type: string
+                  maxLength: 64
                   description: >-
                     CPF. Outer whitespace is trimmed; accepted grammar is exactly
                     11 ASCII digits or NNN.NNN.NNN-NN, followed by checksum validation.
@@ -43,6 +45,7 @@ paths:
                   type: string
                   format: password
                   minLength: 1
+                  maxLength: 128
       responses:
         "200":
           description: BetterAuth session created and independently validated

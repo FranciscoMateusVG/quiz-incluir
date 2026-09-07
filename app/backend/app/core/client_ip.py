@@ -51,7 +51,7 @@ def canonicalize_ip(value: str | None) -> str | None:
 
 
 def parse_trusted_proxy_cidrs(value: str | Iterable[str]) -> tuple[IpNetwork, ...]:
-    """Parse the narrow public-proxy allowlist and reject wildcard trust."""
+    """Parse exact public-proxy host routes; broad/loopback trust is invalid."""
 
     raw_values = value.split(",") if isinstance(value, str) else list(value)
     networks: list[IpNetwork] = []
@@ -63,8 +63,10 @@ def parse_trusted_proxy_cidrs(value: str | Iterable[str]) -> tuple[IpNetwork, ..
             network = ip_network(item, strict=False)
         except ValueError as exc:
             raise ValueError(f"Invalid trusted proxy CIDR: {item}") from exc
-        if network.prefixlen == 0:
-            raise ValueError("Wildcard trusted proxy CIDRs are not allowed")
+        if network.prefixlen != network.max_prefixlen:
+            raise ValueError("Trusted proxies must be exact /32 or /128 host routes")
+        if network.network_address.is_loopback:
+            raise ValueError("Loopback cannot be configured as a public trusted proxy")
         networks.append(network)
     return tuple(networks)
 
@@ -160,13 +162,18 @@ def resolve_auth_request_client_ip(
     # In particular, ::ffff:127.0.0.1 is not one of the two authorized peers.
     parsed_peer = _parse_exact_ip(peer_ip)
 
-    relay_values = request.headers.getlist(INTERNAL_CLIENT_IP_HEADER)
-    if parsed_peer in _RELAY_PEERS and len(relay_values) == 1:
-        relay_value = relay_values[0]
-        if "," not in relay_value:
-            canonical_relay = canonicalize_ip(relay_value)
-            if canonical_relay is not None:
-                return canonical_relay
+    if parsed_peer in _RELAY_PEERS:
+        relay_values = request.headers.getlist(INTERNAL_CLIENT_IP_HEADER)
+        if len(relay_values) == 1:
+            relay_value = relay_values[0]
+            if "," not in relay_value:
+                canonical_relay = canonicalize_ip(relay_value)
+                if canonical_relay is not None:
+                    return canonical_relay
+        # Loopback belongs exclusively to the same-process relay trust domain.
+        # Missing/malformed relay metadata must never fall through to public
+        # XFF interpretation, even under a future configuration mistake.
+        return SAFE_SHARED_CLIENT_IP
 
     forwarded_values = request.headers.getlist("x-forwarded-for")
     forwarded = forwarded_values[0] if len(forwarded_values) == 1 else None

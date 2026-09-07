@@ -78,6 +78,7 @@ def _form_request(
     *,
     content_type: bytes = b"application/x-www-form-urlencoded",
     peer: tuple[str, int] | None = ("198.51.100.10", 43100),
+    extra_headers: tuple[tuple[bytes, bytes], ...] = (),
 ) -> Request:
     sent = False
 
@@ -97,7 +98,7 @@ def _form_request(
         "path": "/api/v1/auth/token",
         "raw_path": b"/api/v1/auth/token",
         "query_string": b"",
-        "headers": [(b"content-type", content_type)],
+        "headers": [(b"content-type", content_type), *extra_headers],
         "client": peer,
         "server": ("quiz.test", 80),
         ORIGINAL_CLIENT_SCOPE_KEY: peer,
@@ -703,6 +704,54 @@ class AuthRouteContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.status_code, 422)
                 self.assertEqual(raised.exception.code, AuthErrorCode.INVALID_REQUEST)
                 upstream.assert_not_awaited()
+
+    async def test_oversize_or_malformed_form_is_local_422_without_side_effects(
+        self,
+    ) -> None:
+        requests = (
+            _form_request(_login_form("09149991680", "x" * 129)),
+            _form_request(_login_form(" " * 54 + "09149991680")),
+            _form_request(b"x" * 2049),
+            _form_request(
+                _login_form("09149991680"),
+                extra_headers=((b"content-length", b"2049"),),
+            ),
+            _form_request(b"username=%ZZ&password=x"),
+            _form_request(
+                _login_form("09149991680"),
+                extra_headers=((b"content-length", b"not-a-number"),),
+            ),
+            _form_request(
+                _login_form("09149991680"),
+                extra_headers=(
+                    (b"content-length", b"40"),
+                    (b"content-length", b"40"),
+                ),
+            ),
+            _form_request(
+                urlencode(
+                    {
+                        "username": "09149991680",
+                        "password": "x",
+                        "extra": "rejected",
+                    }
+                ).encode()
+            ),
+        )
+        for request in requests:
+            with self.subTest(content_length=request.headers.get("content-length")):
+                upstream = AsyncMock()
+                join = AsyncMock()
+                with (
+                    patch.object(auth_routes, "sign_in", upstream),
+                    patch.object(auth_routes.crud_user, "get_or_create_by_email", join),
+                ):
+                    with self.assertRaises(AuthAPIError) as raised:
+                        await auth_routes.token(request, db=object())
+                self.assertEqual(raised.exception.status_code, 422)
+                self.assertEqual(raised.exception.code, AuthErrorCode.INVALID_REQUEST)
+                upstream.assert_not_awaited()
+                join.assert_not_awaited()
 
     async def test_route_translates_all_safe_upstream_classes(self) -> None:
         cases = (

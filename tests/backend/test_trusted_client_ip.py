@@ -81,15 +81,23 @@ class CanonicalizeIpTests(unittest.TestCase):
 class TrustedProxyConfigurationTests(unittest.TestCase):
     def test_parses_narrow_ipv4_and_ipv6_networks(self) -> None:
         self.assertEqual(
-            parse_trusted_proxy_cidrs("10.24.0.7/32, 2001:db8:10::/64"),
-            (ip_network("10.24.0.7/32"), ip_network("2001:db8:10::/64")),
+            parse_trusted_proxy_cidrs("10.24.0.7/32, 2001:db8:10::7/128"),
+            (ip_network("10.24.0.7/32"), ip_network("2001:db8:10::7/128")),
         )
 
     def test_empty_configuration_trusts_nobody(self) -> None:
         self.assertEqual(parse_trusted_proxy_cidrs(""), ())
 
-    def test_invalid_and_wildcard_networks_fail_closed(self) -> None:
-        for value in ("not-a-cidr", "0.0.0.0/0", "::/0"):
+    def test_invalid_broad_and_loopback_networks_fail_closed(self) -> None:
+        for value in (
+            "not-a-cidr",
+            "0.0.0.0/0",
+            "::/0",
+            "10.24.0.0/24",
+            "2001:db8:10::/64",
+            "127.0.0.1/32",
+            "::1/128",
+        ):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     parse_trusted_proxy_cidrs(value)
@@ -107,6 +115,9 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
             "https://hono-app:3003",
             "http://auth.example.com",
             "http://8.8.8.8:3003",
+            "http://169.254.169.254",
+            "http://[fe80::1]",
+            "http://redis:6379",
             "http://u:p@hono-app:3003",
             "http://hono-app:3003?target=public",
             "http://hono-app:3003#fragment",
@@ -121,7 +132,10 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
 
 class ResolveClientIpTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.trusted = parse_trusted_proxy_cidrs("10.24.0.0/24, 2001:db8:10::/64")
+        self.trusted = parse_trusted_proxy_cidrs(
+            "10.24.0.7/32,10.24.0.8/32,10.24.0.9/32,"
+            "2001:db8:10::7/128,2001:db8:10::8/128"
+        )
 
     def test_untrusted_peer_cannot_supply_forwarded_identity(self) -> None:
         self.assertEqual(
@@ -182,7 +196,7 @@ class ResolveClientIpTests(unittest.TestCase):
 
 class ResolveAuthRequestClientIpTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.trusted = parse_trusted_proxy_cidrs("10.24.0.0/24")
+        self.trusted = parse_trusted_proxy_cidrs("10.24.0.7/32")
 
     def test_exact_loopback_peer_has_private_relay_header_authority(self) -> None:
         for peer in ("127.0.0.1", "::1"):
@@ -219,9 +233,24 @@ class ResolveAuthRequestClientIpTests(unittest.TestCase):
             with self.subTest(headers=headers):
                 request = _request("127.0.0.1", headers)
                 self.assertEqual(
-                    resolve_auth_request_client_ip(request, self.trusted),
+                    resolve_auth_request_client_ip(
+                        request,
+                        # Simulate a future configuration bug. Loopback relay
+                        # failures still cannot enter the public XFF domain.
+                        (ip_network("127.0.0.1/32"),),
+                    ),
                     "127.0.0.1",
                 )
+
+    def test_loopback_without_relay_metadata_never_consults_public_xff(self) -> None:
+        request = _request(
+            "127.0.0.1",
+            [("X-Forwarded-For", "198.51.100.77")],
+        )
+        self.assertEqual(
+            resolve_auth_request_client_ip(request, (ip_network("127.0.0.1/32"),)),
+            SAFE_SHARED_CLIENT_IP,
+        )
 
     def test_trusted_traefik_dual_spoof_cannot_gain_relay_authority(self) -> None:
         request = _request(
@@ -290,7 +319,7 @@ class MiddlewareTests(unittest.TestCase):
             captured.update(scope)
 
         middleware = CanonicalFletClientIpMiddleware(
-            inner, parse_trusted_proxy_cidrs("10.24.0.0/24")
+            inner, parse_trusted_proxy_cidrs("10.24.0.7/32")
         )
         scope: dict[str, Any] = {
             "type": "websocket",

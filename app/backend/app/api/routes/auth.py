@@ -1,4 +1,6 @@
 from typing import Annotated
+from urllib.parse import parse_qsl
+import re
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
@@ -23,6 +25,11 @@ logout_bearer = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/token", auto_error=False
 )
 
+MAX_AUTH_FORM_BYTES = 2048
+MAX_CPF_INPUT_CHARS = 64
+MAX_PASSWORD_CHARS = 128
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
 _ERROR_RESPONSES = {
     401: {"model": AuthErrorResponse, "description": "Credentials or session rejected"},
     403: {"model": AuthErrorResponse, "description": "Account denied"},
@@ -42,9 +49,15 @@ _FORM_OPENAPI = {
                     "properties": {
                         "username": {
                             "type": "string",
+                            "maxLength": MAX_CPF_INPUT_CHARS,
                             "description": "CPF: 11 ASCII digits or NNN.NNN.NNN-NN",
                         },
-                        "password": {"type": "string", "format": "password"},
+                        "password": {
+                            "type": "string",
+                            "format": "password",
+                            "minLength": 1,
+                            "maxLength": MAX_PASSWORD_CHARS,
+                        },
                     },
                 }
             }
@@ -61,6 +74,65 @@ def _invalid_request(message: str = "CPF e senha são obrigatórios.") -> AuthAP
     )
 
 
+async def _read_limited_form_body(request: Request) -> bytes:
+    content_lengths = request.headers.getlist("content-length")
+    if len(content_lengths) > 1:
+        raise _invalid_request("Formulário inválido.")
+    if content_lengths:
+        try:
+            declared_length = int(content_lengths[0])
+        except ValueError as exc:
+            raise _invalid_request("Formulário inválido.") from exc
+        if declared_length < 0 or declared_length > MAX_AUTH_FORM_BYTES:
+            raise _invalid_request("Formulário muito grande.")
+
+    body = bytearray()
+    try:
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_AUTH_FORM_BYTES:
+                raise _invalid_request("Formulário muito grande.")
+            body.extend(chunk)
+    except AuthAPIError:
+        raise
+    except Exception as exc:
+        raise _invalid_request("Formulário inválido.") from exc
+    return bytes(body)
+
+
+def _parse_login_form(body: bytes) -> tuple[str, str]:
+    try:
+        encoded = body.decode("ascii")
+        if _INVALID_PERCENT_ESCAPE.search(encoded):
+            raise ValueError("invalid percent escape")
+        fields = parse_qsl(
+            encoded,
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=3,
+            encoding="utf-8",
+            errors="strict",
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise _invalid_request("Formulário inválido.") from exc
+
+    if len(fields) != 2 or {name for name, _value in fields} != {
+        "username",
+        "password",
+    }:
+        raise _invalid_request()
+    values = dict(fields)
+    username = values["username"]
+    password = values["password"]
+    if (
+        not username
+        or len(username) > MAX_CPF_INPUT_CHARS
+        or not password
+        or len(password) > MAX_PASSWORD_CHARS
+    ):
+        raise _invalid_request()
+    return username, password
+
+
 @router.post(
     "/token",
     response_model=Token,
@@ -74,23 +146,9 @@ async def token(request: Request, db: AsyncSession = Depends(get_db)) -> Token:
     if content_type != "application/x-www-form-urlencoded":
         raise _invalid_request("Envie CPF e senha como formulário.")
 
-    try:
-        form = await request.form()
-    except Exception as exc:
-        raise _invalid_request("Formulário inválido.") from exc
+    username, password = _parse_login_form(await _read_limited_form_body(request))
 
-    usernames = form.getlist("username")
-    passwords = form.getlist("password")
-    if (
-        len(usernames) != 1
-        or len(passwords) != 1
-        or not isinstance(usernames[0], str)
-        or not isinstance(passwords[0], str)
-        or passwords[0] == ""
-    ):
-        raise _invalid_request()
-
-    cpf = normalize_cpf(usernames[0])
+    cpf = normalize_cpf(username)
     if cpf is None:
         raise AuthAPIError(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -100,7 +158,7 @@ async def token(request: Request, db: AsyncSession = Depends(get_db)) -> Token:
 
     client_ip = resolve_auth_request_client_ip(request, settings.trusted_proxy_networks)
     try:
-        authenticated = await sign_in(cpf, passwords[0], client_ip)
+        authenticated = await sign_in(cpf, password, client_ip)
     except MonorepoAuthError as exc:
         raise translate_auth_error(exc) from exc
 
