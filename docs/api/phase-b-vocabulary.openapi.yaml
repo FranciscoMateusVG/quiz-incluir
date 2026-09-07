@@ -1,0 +1,348 @@
+openapi: 3.1.0
+info:
+  title: Quiz Incluir Phase B vocabulary
+  version: 1.2.0
+  description: >-
+    Authenticated Portuguese-to-English lookup and user-initiated English
+    pronunciation. Provider credentials and calls remain server-side. Every
+    request is authorized from the Phase A BetterAuth session oracle and keyed
+    by its verified user.id; email, token, and session identifiers are never
+    rate or ownership keys.
+servers:
+  - url: /
+paths:
+  /api/v1/vocabulary/lookup:
+    post:
+      operationId: lookupVocabulary
+      summary: Return one English translation and concise English definition
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: verified-user-id-lookup-10-per-process-minute-100-durable-per-utc-day
+      x-provider-concurrency-tier: per-process-4-with-durable-global-budget-backstop
+      x-provider-request:
+        origin: https://api.openai.com
+        path: /v1/chat/completions
+        model: gpt-4o-mini-2024-07-18
+        store: false
+        maximumInputTokens: 2048
+        maximumCompletionTokens: 256
+        maximumConstructedPromptUtf8Bytes: 2048
+        retries: 0
+        timeoutSeconds: 10
+        absoluteJourneyDeadlineSeconds: 12
+        maximumBufferedResponseBytes: 65536
+        ambientConfiguration: >-
+          OPENAI_API_KEY is the sole permitted OPENAI_* process variable.
+          Any tenant, project, admin, custom-header, base-URL, or SDK logging
+          variable fails settings validation before SDK import.
+        responseSchema:
+          type: object
+          additionalProperties: false
+          required: [translation, definition]
+          properties:
+            translation: {type: string, minLength: 1, maxLength: 120}
+            definition: {type: string, minLength: 1, maxLength: 240}
+      x-gate-order:
+        - strict-phase-a-authentication
+        - streamed-body-and-input-validation
+        - credential-enabled-check
+        - per-process-minute-limit
+        - durable-daily-limit
+        - successful-result-cache
+        - durable-monthly-worst-case-reservation
+        - per-process-concurrency
+        - fixed-provider-call
+      x-cache:
+        policy: lru-512-successful-lookups-for-24-hours
+        key: nfc-casefold-collapsed-whitespace
+        missCoalescing: one-in-flight-provider-call-per-identical-key-per-process
+        missDeadline: >-
+          The leader request's absolute journey deadline is propagated into
+          the shared provider flight; shielding or followers cannot extend
+          paid work beyond that deadline.
+        accounting: minute-and-daily-limits-apply-to-cache-hits
+        storedFields: [translation, definition]
+        excludedFields: [source_text, lookup_id, user_id, ownership]
+        responseBehavior: >-
+          Every response, including a cache hit or a coalesced follower, uses
+          the current request's canonical source_text and creates a fresh
+          15-minute lookup_id bound to the current verified user.id. Cache hits
+          do not create a monthly provider-cost reservation.
+      x-durable-accounting:
+        store: existing-quiz-postgres
+        dailyLimitPerVerifiedUserId: 100
+        monthlyLimitMaximumMicrousd: 5000000
+        behaviorOnStorageFailure: fail-closed-without-provider-call
+        behaviorOnConfiguredStoredLimitMismatch: fail-closed-without-provider-call
+        reservation: atomic-worst-case-before-provider-call
+        settlement: actual-usage-on-success-with-unknown-charge-left-reserved
+        lookupPricing:
+          version: official-snapshot-pricing-verified-2026-09-07
+          source: https://openai.com/index/api-prompt-caching/
+          inputMicrousdNumeratorPerToken: 15
+          outputMicrousdNumeratorPerToken: 60
+          denominator: 100
+          actualCostFormula: ceil((input_tokens*15+output_tokens*60)/100)
+          worstCaseReservationMicrousd: 461
+          worstCaseFormula: ceil((2048*15+256*60)/100)
+      x-max-body-bytes: 1024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  description: >-
+                    Portuguese word or phrase. Before normalization the server
+                    rejects C0/C1 controls, DEL, U+2028/U+2029, and every
+                    Unicode Cf format character (including bidi controls). It
+                    then applies Unicode NFC, trims outer whitespace, collapses
+                    repeated internal whitespace to one ASCII space, and
+                    applies the 1–120 Unicode code-point bound. The raw body is
+                    bounded to 1,024 bytes, so repeated whitespace may exceed
+                    120 raw code points when its normalized result does not.
+                    Accents and display casing are preserved.
+            examples:
+              word: {value: {text: casa}}
+              phrase: {value: {text: "  BOM   DIA "}}
+      responses:
+        "200":
+          description: >-
+            Exactly one translation, one English definition, and an opaque
+            short-lived pronunciation grant bound server-side to the verified
+            user ID and canonical translation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VocabularyLookup"
+              example:
+                source_text: casa
+                translation: house
+                definition: A building where people live.
+                lookup_id: 00000000-0000-4000-8000-000000000001
+        "401": {$ref: "#/components/responses/AuthRequired"}
+        "404": {$ref: "#/components/responses/NoResult"}
+        "422": {$ref: "#/components/responses/InvalidInput"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "502": {$ref: "#/components/responses/InvalidProviderResponse"}
+        "503": {$ref: "#/components/responses/ProviderUnavailable"}
+  /api/v1/vocabulary/pronunciation:
+    post:
+      operationId: pronounceVocabulary
+      summary: Generate MP3 pronunciation for the displayed English translation
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: verified-user-id-pronunciation-10-per-process-minute-100-durable-per-utc-day
+      x-provider-concurrency-tier: per-process-4-with-durable-global-budget-backstop
+      x-provider-request:
+        origin: https://api.openai.com
+        path: /v1/audio/speech
+        model: tts-1
+        voice: alloy
+        format: mp3
+        speed: 0.9
+        retries: 0
+        timeoutSeconds: 10
+        absoluteJourneyDeadlineSeconds: 12
+        maximumBufferedResponseBytes: 2097152
+        requiredResponseContentType: audio/mpeg
+        requiredResponseFraming: ID3-header-or-valid-MPEG-frame-sync
+      x-gate-order:
+        - strict-phase-a-authentication
+        - streamed-body-and-lookup-id-validation
+        - server-side-user-ownership-and-expiry-check
+        - credential-enabled-check
+        - per-process-minute-limit
+        - durable-daily-limit
+        - durable-monthly-worst-case-reservation
+        - per-process-concurrency
+        - fixed-provider-call
+      x-durable-accounting:
+        store: existing-quiz-postgres
+        dailyLimitPerVerifiedUserId: 100
+        monthlyLimitMaximumMicrousd: 5000000
+        behaviorOnStorageFailure: fail-closed-without-provider-call
+        reservation: atomic-15-microusd-per-canonical-translation-character
+        settlement: exact-character-cost-on-success-with-unknown-charge-left-reserved
+        pronunciationPricing:
+          version: official-tts-1-pricing-verified-2026-09-07
+          source: https://developers.openai.com/api/docs/models/tts-1
+          microusdPerCharacter: 15
+          maximumCharacters: 120
+          worstCaseReservationMicrousd: 1800
+      x-max-body-bytes: 1024
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [lookup_id]
+              properties:
+                lookup_id:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Opaque grant returned by a successful lookup. The server
+                    resolves the canonical translation only after verifying
+                    the grant belongs to the current verified BetterAuth
+                    user.id and has not expired. Unknown, expired, malformed,
+                    or another user's grant returns the same local 422 response
+                    before a provider call.
+            example: {lookup_id: 00000000-0000-4000-8000-000000000001}
+      responses:
+        "200":
+          description: >-
+            Nonempty bounded MP3 generated only for the server-associated
+            translation. The grant remains scoped to its verified user.
+          headers:
+            Cache-Control: {schema: {type: string}, example: no-store}
+          content:
+            audio/mpeg:
+              schema: {type: string, contentEncoding: binary}
+        "401": {$ref: "#/components/responses/AuthRequired"}
+        "422": {$ref: "#/components/responses/InvalidInput"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "502": {$ref: "#/components/responses/InvalidProviderResponse"}
+        "503": {$ref: "#/components/responses/ProviderUnavailable"}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque BetterAuth cookie pair
+  schemas:
+    VocabularyLookup:
+      type: object
+      additionalProperties: false
+      required: [source_text, translation, definition, lookup_id]
+      properties:
+        source_text:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Canonical normalized form of the submitted Portuguese text
+        translation:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: >-
+            One NFC English equivalent. The strict provider result and final
+            response reject C0/C1 controls, DEL, U+2028/U+2029, and Unicode Cf
+            format characters, require already-canonical single ASCII spaces,
+            and enforce length by Unicode code point. Successful lookup output
+            is therefore valid for the server-resolved pronunciation path.
+        definition:
+          type: string
+          minLength: 1
+          maxLength: 240
+          description: >-
+            One NFC concise English definition sentence with the same
+            response-safe Unicode rejection rules and code-point length bound.
+        lookup_id:
+          type: string
+          format: uuid
+          description: >-
+            Opaque 15-minute pronunciation grant bound server-side to the
+            verified user ID and returned canonical translation
+    VocabularyError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_input
+            - auth_unavailable
+            - auth_invalid_response
+            - auth_required
+            - no_result
+            - rate_limited
+            - provider_unavailable
+            - invalid_provider_response
+        message:
+          type: string
+          description: Safe user-facing text without provider bodies or identity data
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2678400
+          description: >-
+            Present only when a truthful bounded retry is known. Minute and
+            UTC-day denials report their remaining window; UTC-month budget
+            exhaustion reports exact seconds to the next UTC month. Provider
+            advisory values are accepted only as positive ASCII decimal and
+            clamped to this schema maximum.
+  responses:
+    AuthRequired:
+      description: Missing or proven invalid/expired/revoked BetterAuth session
+      headers:
+        WWW-Authenticate: {schema: {type: string}, example: Bearer}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: auth_required, message: "Autenticação necessária."}
+    InvalidInput:
+      description: >-
+        Invalid or oversized JSON/body, invalid lookup grant, forbidden Unicode,
+        empty normalized text, or code-point length violation. The 1,024-byte
+        cumulative limit is enforced while streaming, before JSON decoding.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: invalid_input, message: "Informe uma palavra ou frase válida."}
+    NoResult:
+      description: Provider explicitly found no usable translation
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: no_result, message: "Nenhuma tradução foi encontrada."}
+    RateLimited:
+      description: >-
+        Per-process minute limit or durable UTC-day limit keyed by verified
+        user.id, provider rate limit, or durable UTC-month budget ceiling.
+        Daily/monthly storage and monthly reservations use existing Postgres
+        atomically across restarts and replicas. A denial makes no provider
+        call. Monthly denial reports exact bounded seconds to the next UTC
+        month; provider advice is clamped rather than trusted as an unbounded
+        delay.
+      headers:
+        Retry-After: {schema: {type: integer, minimum: 1, maximum: 2678400}}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: rate_limited, message: "Limite de consultas atingido.", retry_after_seconds: 42}
+    InvalidProviderResponse:
+      description: >-
+        BetterAuth revalidation was malformed (`auth_invalid_response`) or the
+        vocabulary provider returned malformed, empty, oversized, or non-MP3
+        output (`invalid_provider_response`). Provider JSON is streamed and
+        capped before decode, must contain exactly translation and definition,
+        and must pass the same NFC/Unicode/length rules. Audio must be nonempty,
+        at most 2 MiB, audio/mpeg, and have an ID3 header or MPEG frame sync.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: invalid_provider_response, message: "Não foi possível interpretar a resposta."}
+    ProviderUnavailable:
+      description: >-
+        BetterAuth revalidation was unavailable (`auth_unavailable`), or the
+        vocabulary provider credential is absent/rejected, concurrency wait
+        expired, durable budget storage is unavailable, or the provider had a
+        network/timeout/5xx failure (`provider_unavailable`). Provider transport
+        is fixed to the declared HTTPS origin/path/model/voice, disables ambient
+        proxy inheritance and redirects, and is contained by the declared
+        absolute journey deadline. No caller URL/header/options, raw provider
+        logs, retry, or fallback path exists.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/VocabularyError"}
+          example: {code: provider_unavailable, message: "Vocabulário indisponível no momento."}

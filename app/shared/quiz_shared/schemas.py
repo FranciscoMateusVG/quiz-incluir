@@ -14,9 +14,19 @@ relied on implicitly), so these can still be built directly from ORM rows via
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
+from typing import Annotated
+from unicodedata import category, is_normalized
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    StringConstraints,
+)
 
 from quiz_shared.enums import (
     CourseLevel,
@@ -30,6 +40,67 @@ from quiz_shared.enums import (
 
 class _Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+class _StrictWireBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+def _validate_canonical_identity(value: str) -> str:
+    """Validate a previously authenticated identity without DNS policy."""
+
+    if any(
+        ord(character) <= 0x1F
+        or ord(character) == 0x7F
+        or character in {"\u2028", "\u2029"}
+        or category(character) == "Cf"
+        for character in value
+    ):
+        raise ValueError("identity contains unsafe control characters")
+    return value
+
+
+CanonicalIdentityEmail = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=254),
+    AfterValidator(_validate_canonical_identity),
+]
+
+
+def validate_canonical_vocabulary_output(value: str) -> str:
+    """Validate provider output before it can cross a vocabulary API boundary.
+
+    Output is already canonical: this validator deliberately rejects rather
+    than normalizes it.  In particular, the only permitted whitespace is one
+    ASCII space between non-whitespace runs, matching the pronunciation input
+    contract.
+    """
+
+    if not value or value != value.strip() or not is_normalized("NFC", value):
+        raise ValueError("value must be nonempty, unpadded Unicode NFC")
+    if " ".join(value.split()) != value:
+        raise ValueError("value must use single ASCII spaces")
+    if any(
+        ord(character) <= 0x1F
+        or 0x7F <= ord(character) <= 0x9F
+        or character in {"\u2028", "\u2029"}
+        or category(character) == "Cf"
+        for character in value
+    ):
+        raise ValueError("value contains unsafe Unicode characters")
+    return value
+
+
+CanonicalVocabularyText120 = Annotated[
+    StrictStr,
+    StringConstraints(min_length=1, max_length=120),
+    AfterValidator(validate_canonical_vocabulary_output),
+]
+CanonicalVocabularyDefinition = Annotated[
+    StrictStr,
+    StringConstraints(min_length=1, max_length=240),
+    AfterValidator(validate_canonical_vocabulary_output),
+]
 
 
 class MediaRead(_Base):
@@ -94,7 +165,10 @@ class AttemptRead(_Base):
 
 class UserRead(_Base):
     id: UUID
-    email: EmailStr
+    # This value has already been authenticated and normalized upstream by
+    # BetterAuth. Response serialization must not apply deliverability policy:
+    # the isolated parity fixture deliberately uses the reserved .test TLD.
+    email: CanonicalIdentityEmail
     level: CourseLevel
     role: UserRole
     created_at: datetime
@@ -106,10 +180,58 @@ class TokenRead(_Base):
     token_type: str = "bearer"
 
 
+class AuthErrorCode(StrEnum):
+    INVALID_CPF = "invalid_cpf"
+    INVALID_REQUEST = "invalid_request"
+    INVALID_CREDENTIALS = "invalid_credentials"
+    ACCOUNT_DENIED = "account_denied"
+    RATE_LIMITED = "rate_limited"
+    AUTH_REQUIRED = "auth_required"
+    AUTH_UNAVAILABLE = "auth_unavailable"
+    AUTH_INVALID_RESPONSE = "auth_invalid_response"
+    LOGOUT_UNCONFIRMED = "logout_unconfirmed"
+
+
+class AuthErrorResponse(_Base):
+    code: AuthErrorCode
+    message: str
+    retry_after_seconds: int | None = None
+
+
+class VocabularyLookupRequest(_StrictWireBase):
+    # Normalized length is enforced after the bounded request body is read.
+    text: StrictStr
+
+
+class PronunciationRequest(_StrictWireBase):
+    lookup_id: UUID
+
+
+class VocabularyLookupResponse(_StrictWireBase):
+    lookup_id: UUID
+    source_text: CanonicalVocabularyText120
+    translation: CanonicalVocabularyText120
+    definition: CanonicalVocabularyDefinition
+
+
+class VocabularyErrorCode(StrEnum):
+    INVALID_INPUT = "invalid_input"
+    NO_RESULT = "no_result"
+    RATE_LIMITED = "rate_limited"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+
+
+class VocabularyErrorResponse(_StrictWireBase):
+    code: VocabularyErrorCode
+    message: StrictStr
+    retry_after_seconds: Annotated[int, Field(ge=1, le=2_678_400)] | None = None
+
+
 class AdminAttemptRow(_Base):
     attempt_id: UUID
     user_id: UUID
-    email: EmailStr
+    email: CanonicalIdentityEmail
     level: CourseLevel
     score: float | None = None
     max_score: float

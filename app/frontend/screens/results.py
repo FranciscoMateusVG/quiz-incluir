@@ -4,7 +4,6 @@ import flet as ft
 from flet import component
 
 import theme
-from config import APP_TITLE
 from controllers.quiz_controller import QuizController
 from services.files import save_bytes
 from state.app_state import AppState
@@ -25,6 +24,8 @@ def ResultsScreen(state: AppState, controller: QuizController):
     async def download_pdf(e):
         try:
             pdf_bytes = await controller.download_report()
+            if pdf_bytes is None:
+                return
             await save_bytes(f"quiz-report-{state.attempt_id}.pdf", pdf_bytes)
         except Exception as ex:
             notify(f"Could not download report: {ex}", error=True)
@@ -63,13 +64,19 @@ def ResultsScreen(state: AppState, controller: QuizController):
                 ft.Row(
                     [
                         ft.FilledButton(
-                            "Take another quiz", on_click=again, expand=True
+                            "Take another quiz",
+                            key="results-take-another",
+                            on_click=again,
+                            expand=True,
+                            height=theme.CONTROL_HEIGHT,
                         ),
                         ft.OutlinedButton(
                             "Download PDF",
+                            key="results-download",
                             icon=ft.Icons.PICTURE_AS_PDF,
                             on_click=download_pdf,
                             expand=True,
+                            height=theme.CONTROL_HEIGHT,
                         ),
                     ],
                     spacing=theme.SPACING_LG,
@@ -85,7 +92,9 @@ def ResultsScreen(state: AppState, controller: QuizController):
         appbar=ft.AppBar(
             bgcolor=theme.SURFACE,
             elevation=0,
-            title=ft.Text("Results", weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY),
+            title=ft.Text(
+                "Results", weight=ft.FontWeight.BOLD, color=theme.TEXT_PRIMARY
+            ),
             center_title=True,
         ),
         controls=[

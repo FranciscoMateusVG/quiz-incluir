@@ -1,0 +1,280 @@
+openapi: 3.1.0
+info:
+  title: Quiz Incluir Phase A authentication
+  version: 1.0.0
+  description: >-
+    Contract for the Quiz server-side relay to the existing Programa Incluir
+    BetterAuth service. The BetterAuth cookie is opaque and remains server-side.
+servers:
+  - url: /
+paths:
+  /api/v1/auth/token:
+    post:
+      operationId: signInWithCpf
+      summary: Authenticate a Quiz session using Programa Incluir CPF/password
+      security: []
+      x-rate-limit-tier: betterauth-sign-in-ip-3-per-10-seconds
+      parameters:
+        - name: X-Quiz-Client-IP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: >-
+            Same-process internal relay metadata. Honored only when the original
+            socket peer is exactly 127.0.0.1 or ::1, must contain one canonical
+            IP, and is ignored for public/non-loopback callers.
+      requestBody:
+        required: true
+        x-max-body-bytes: 2048
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  maxLength: 64
+                  description: >-
+                    CPF. Outer whitespace is trimmed; accepted grammar is exactly
+                    11 ASCII digits or NNN.NNN.NNN-NN, followed by checksum validation.
+                  examples: [09149991680, 091.499.916-80]
+                password:
+                  type: string
+                  format: password
+                  minLength: 1
+                  maxLength: 128
+      responses:
+        "200":
+          description: BetterAuth session created and independently validated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthToken"
+              example:
+                access_token: better-auth.session_token=opaque-example
+                token_type: bearer
+        "401":
+          $ref: "#/components/responses/InvalidCredentials"
+        "403":
+          $ref: "#/components/responses/AccountDenied"
+        "422":
+          $ref: "#/components/responses/InvalidRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/InvalidAuthResponse"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+  /api/v1/auth/logout:
+    post:
+      operationId: logoutCurrentQuizSession
+      summary: Revoke and verify the current Quiz-created BetterAuth session
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: no-quiz-side-limit
+      responses:
+        "204":
+          description: >-
+            Current cookie revocation was semantically confirmed by a former-cookie
+            get-session probe. A sign-out 2xx alone never produces this response.
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "502":
+          $ref: "#/components/responses/LogoutUnconfirmed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentQuizUser
+      summary: Revalidate BetterAuth and return the Quiz-local user and role
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: no-quiz-side-limit
+      responses:
+        "200":
+          description: Verified upstream identity joined to the Quiz-local row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "502":
+          $ref: "#/components/responses/InvalidAuthResponse"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+  /api/v1/users/me:
+    get:
+      operationId: getCurrentUserProfile
+      summary: Return the same verified Quiz-local user profile
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: no-quiz-side-limit
+      responses:
+        "200":
+          description: Current Quiz-local user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "502":
+          $ref: "#/components/responses/InvalidAuthResponse"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+    patch:
+      operationId: updateCurrentUserProfile
+      summary: Update non-identity fields on the current Quiz-local profile
+      description: >-
+        The BetterAuth email is the immutable local identity join key and is not
+        accepted by this endpoint. Unknown fields, including email, return 422
+        before any database write.
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: no-quiz-side-limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                level: {type: string, enum: [B1, B2, B3, B4]}
+      responses:
+        "200":
+          description: Updated Quiz-local profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "422":
+          description: Email/unknown field or invalid level was rejected locally
+        "502":
+          $ref: "#/components/responses/InvalidAuthResponse"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque BetterAuth cookie pair
+  schemas:
+    AuthToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type]
+      properties:
+        access_token:
+          type: string
+          maxLength: 4096
+          description: Opaque BetterAuth session cookie name=value pair
+        token_type:
+          type: string
+          const: bearer
+    AuthError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_cpf
+            - invalid_request
+            - invalid_credentials
+            - account_denied
+            - rate_limited
+            - auth_required
+            - auth_unavailable
+            - auth_invalid_response
+            - logout_unconfirmed
+        message:
+          type: string
+          description: Safe user-facing message with no upstream body or credential data
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Present only for a validated upstream rate-limit response
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email, level, role, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        email:
+          type: string
+          minLength: 1
+          maxLength: 254
+          description: >-
+            Exact stored, upstream-authenticated identity. Response serialization
+            rejects control/format characters but does not apply DNS/TLD deliverability policy.
+        level: {type: string, enum: [B1, B2, B3, B4]}
+        role: {type: string, enum: [student, admin]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+  responses:
+    InvalidCredentials:
+      description: Explicit allowlisted upstream credential rejection
+      headers:
+        WWW-Authenticate: {schema: {type: string}, example: Bearer}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: invalid_credentials, message: "CPF ou senha inválidos."}
+    AccountDenied:
+      description: Explicit upstream banned-account rejection
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: account_denied, message: "Acesso não permitido."}
+    InvalidRequest:
+      description: Invalid form, CPF grammar, or CPF checksum; no upstream call occurs
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          examples:
+            cpf: {value: {code: invalid_cpf, message: "CPF inválido."}}
+            form: {value: {code: invalid_request, message: "CPF e senha são obrigatórios."}}
+    RateLimited:
+      description: Validated BetterAuth sign-in rate limit
+      headers:
+        Retry-After: {schema: {type: integer, minimum: 1, maximum: 10}, example: 7}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: rate_limited, message: "Muitas tentativas. Tente novamente em instantes.", retry_after_seconds: 7}
+    AuthRequired:
+      description: Missing or proven invalid/expired/revoked session
+      headers:
+        WWW-Authenticate: {schema: {type: string}, example: Bearer}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: auth_required, message: "Autenticação necessária."}
+    InvalidAuthResponse:
+      description: Malformed or unexpected upstream status/body
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: auth_invalid_response, message: "Não foi possível confirmar a autenticação."}
+    AuthUnavailable:
+      description: Upstream timeout/network/5xx/limiter or INVALID_CLIENT_IP failure
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: auth_unavailable, message: "Não foi possível entrar agora. Tente novamente."}
+    LogoutUnconfirmed:
+      description: Sign-out was rejected/malformed or the former cookie still authenticates
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/AuthError"}
+          example: {code: logout_unconfirmed, message: "Não foi possível confirmar a saída no servidor."}

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+from typing import Callable
+
 import flet as ft
 
 import config
@@ -9,10 +12,89 @@ import theme
 from controllers.admin_controller import AdminController
 from controllers.auth_controller import AuthController
 from controllers.quiz_controller import QuizController
+from controllers.vocabulary_controller import VocabularyController
 from router import make_app
 from services.api import QuizApiClient
 from services.media import register_audio
 from state.app_state import AppState
+from widgets.auth_guard import auth_checking_view, protected_route_key
+
+
+def canonicalize_client_ip(value: object) -> str | None:
+    """Validate Flet's server-owned ingress IP before the loopback relay."""
+    if value is None:
+        return None
+    try:
+        return str(ipaddress.ip_address(str(value)))
+    except ValueError:
+        return None
+
+
+def handle_auth_required(
+    page: ft.Page,
+    state: AppState,
+    auth: AuthController,
+    failed_token: str,
+    failed_generation: int | None,
+) -> None:
+    """Apply one proven invalidation only to the request's owning session."""
+    if (
+        state.token != failed_token
+        or state.auth_session_generation != failed_generation
+    ):
+        return
+    auth.invalidate_validation()
+    state.clear_session()
+    state.remember_return_route(page.route)
+    state.auth_notice = "Sua sessão expirou. Entre novamente."
+    page.navigate("/")
+
+
+def install_session_revalidation(
+    page: ft.Page,
+    state: AppState,
+    auth: AuthController,
+    restore_app_views: Callable[[], None] | None = None,
+) -> None:
+    """Neutralize retained protected trees, then revalidate after reconnect."""
+
+    def on_disconnect(e) -> None:
+        # Every detached client loses ownership of work it started, including
+        # a login that has not installed identity yet.
+        state.supersede_async_work()
+        if state.token is None or state.current_user is None:
+            return
+        # A disconnect ends the authority of every request started by the old
+        # client attachment without treating reconnect as logout. Only the
+        # forced /users/me check in on_connect can validate the retained token
+        # for the new attachment.
+        auth.invalidate_validation()
+        # Flet 0.86.5 allows retained-session reuse only after disconnect sets
+        # the old connection to None, then invokes this synchronous handler
+        # before yielding. Replace the concrete Page tree here; observable
+        # component scheduling is dropped while detached, so invalidating
+        # state and calling update alone cannot protect REGISTER_CLIENT.
+        route = protected_route_key(page.route)
+        if route is not None:
+            page.views = [auth_checking_view(route)]
+        page.update()
+
+    async def on_connect(e) -> None:
+        route = protected_route_key(page.route)
+        if (
+            route is not None
+            and state.token is not None
+            and state.current_user is not None
+        ):
+            await auth.revalidate(route, force=True)
+            # The disconnect barrier deliberately replaced the component
+            # tree with a concrete neutral View. Rebuild the app only after
+            # the authoritative session result (valid, invalid, or outage).
+            if restore_app_views is not None:
+                restore_app_views()
+
+    page.on_disconnect = on_disconnect
+    page.on_connect = on_connect
 
 
 def main(page: ft.Page) -> None:
@@ -35,14 +117,37 @@ def main(page: ft.Page) -> None:
     page.appbar = ft.AppBar(title=ft.Text(config.APP_TITLE), center_title=True)
 
     state = AppState()
-    api = QuizApiClient(config.API_URL)
+    api = QuizApiClient(
+        trusted_client_ip=canonicalize_client_ip(page.client_ip),
+    )
     auth = AuthController(state, api)
+
+    def on_auth_required(failed_token: str, failed_generation: int | None) -> None:
+        # Only QuizApiClient's typed 401 auth_required path invokes this.
+        # Outages and malformed upstream responses must preserve local state.
+        handle_auth_required(page, state, auth, failed_token, failed_generation)
+
+    api.set_auth_required_handler(
+        on_auth_required, lambda: state.auth_session_generation
+    )
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
+    vocabulary_controller = VocabularyController(state, api)
 
-    page.render_views(make_app(state, auth, quiz_controller, admin_controller))
+    app_component = make_app(
+        state,
+        auth,
+        quiz_controller,
+        admin_controller,
+        vocabulary_controller,
+    )
+
+    def restore_app_views() -> None:
+        page.render_views(app_component)
+
+    install_session_revalidation(page, state, auth, restore_app_views)
+    restore_app_views()
 
 
 if __name__ == "__main__":
     ft.run(main, no_cdn=True)
-

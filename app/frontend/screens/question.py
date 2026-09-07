@@ -47,35 +47,53 @@ def QuestionScreen(state: AppState, controller: QuizController):
     }
 
     async def on_back(e):
+        try:
+            token, generation = controller.session_snapshot()
+        except RuntimeError:
+            return
         await stop_audio(ft.context.page)
+        if not controller.session_is_current(token, generation):
+            return
         controller.previous()
 
     async def on_submit(e):
+        try:
+            token, generation = controller.session_snapshot()
+        except RuntimeError:
+            return
         await stop_audio(ft.context.page)
+        if not controller.session_is_current(token, generation):
+            return
         response = widget.extract()
         if response is None:
             notify("Please answer the question first.", error=True)
             return
         try:
-            await controller.submit(str(question.id), response)
+            committed = await controller.submit(str(question.id), response)
         except Exception as ex:
             notify(f"Could not save your answer: {ex}", error=True)
+            return
+        if not committed:
             return
         if state.finished:
             ft.context.page.navigate("/results")
 
     back_btn = ft.OutlinedButton(
         "Back",
+        key="question-back",
         icon=ft.Icons.ARROW_BACK,
         on_click=on_back,
         disabled=idx == 0,
         expand=True,
+        height=theme.CONTROL_HEIGHT,
     )
     next_btn = ft.FilledButton(
         "Finish" if is_last else "Next",
+        key="question-submit",
         icon=ft.Icons.CHECK if is_last else ft.Icons.ARROW_FORWARD,
         on_click=on_submit,
         expand=True,
+        height=theme.CONTROL_HEIGHT,
     )
 
     quiz_media = state.quiz.media if state.quiz else []
