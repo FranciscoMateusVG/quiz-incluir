@@ -13,10 +13,9 @@ import re
 from uuid import UUID
 
 import flet as ft
-
 from models.attempt import AttemptResult, User
-from models.quiz import Quiz
 from models.question import Question
+from models.quiz import Quiz
 
 _ADMIN_GRADES_DETAIL_RE = re.compile(r"^/admin/grades/([^/?#]+)$")
 
@@ -55,6 +54,10 @@ class AppState:
     auth_validation_message: str = ""
     # Monotonic, server-only ownership marker for in-flight async work.
     auth_session_generation: int = 0
+
+    # Opaque pronunciation grant for the current authenticated identity.
+    # The displayed translation is never trusted back into the audio request.
+    vocabulary_lookup_id: str | None = None
 
     quiz: Quiz | None = None
     questions: list[Question] = dataclasses.field(default_factory=list)
@@ -119,6 +122,7 @@ class AppState:
 
     def _clear_quiz_state(self) -> None:
         """Remove every value owned by the superseded authenticated session."""
+        self.vocabulary_lookup_id = None
         self.quiz = None
         self.questions = []
         self.answers = {}

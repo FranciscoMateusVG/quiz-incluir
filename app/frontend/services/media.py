@@ -83,6 +83,27 @@ async def stop_audio(page: ft.Page) -> None:
             pass
 
 
+async def reset_audio_source(page: ft.Page) -> None:
+    """Stop current media and release its source without replacing the service."""
+    audio = ensure_audio(page)
+    try:
+        await audio.pause()
+    except Exception:
+        pass
+    audio.src = PLACEHOLDER_SRC
+    audio.update()
+
+
+async def play_audio_bytes(page: ft.Page, content: bytes) -> None:
+    """Play nonempty generated audio through the pre-registered page service."""
+    if not isinstance(content, bytes) or not content:
+        raise ValueError("pronunciation audio must be nonempty bytes")
+    audio = ensure_audio(page)
+    audio.src = content
+    audio.update()
+    await audio.play()
+
+
 def launch_url(url: str) -> None:
     page = ft.context.page
     page.launch_url(url)

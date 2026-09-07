@@ -11,14 +11,14 @@ import asyncio
 from collections.abc import Callable
 
 import httpx
-
+from config import API_TIMEOUT, PRIVATE_API_ORIGIN
 from models.admin import AdminAttemptRow, QuestionStatRow
 from models.answer import AnswerRead
-from models.attempt import Attempt, AttemptResult
-from models.quiz import Quiz
+from models.attempt import Attempt, AttemptResult, Token, User
 from models.question import Question
-from models.attempt import Token, User
-from config import API_TIMEOUT, PRIVATE_API_ORIGIN
+from models.quiz import Quiz
+from models.vocabulary import VocabularyLookup
+
 from services.exceptions import QuizApiError
 
 
@@ -228,6 +228,30 @@ class QuizApiClient:
             f"/api/v1/attempts/{attempt_id}/report.pdf",
             auth_token=token,
             headers=self._headers(token),
+        )
+        if resp.status_code >= 400:
+            self._handle(resp, token=token)
+        return resp.content
+
+    # ---------- vocabulary ----------
+
+    async def lookup_vocabulary(self, token: str, text: str) -> VocabularyLookup:
+        resp = await self._request(
+            "POST",
+            "/api/v1/vocabulary/lookup",
+            auth_token=token,
+            headers=self._headers(token),
+            json={"text": text},
+        )
+        return VocabularyLookup.model_validate(self._handle(resp, token=token))
+
+    async def pronounce_vocabulary(self, token: str, lookup_id: str) -> bytes:
+        resp = await self._request(
+            "POST",
+            "/api/v1/vocabulary/pronunciation",
+            auth_token=token,
+            headers=self._headers(token),
+            json={"lookup_id": lookup_id},
         )
         if resp.status_code >= 400:
             self._handle(resp, token=token)

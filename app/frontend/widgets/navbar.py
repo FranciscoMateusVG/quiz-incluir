@@ -20,6 +20,9 @@ def app_bar(
     def go_quizzes(e):
         page.navigate("/quizzes")
 
+    def go_vocabulary(e):
+        page.navigate("/vocabulario")
+
     def go_admin(e):
         page.navigate("/admin/grades")
 
@@ -42,7 +45,14 @@ def app_bar(
             icon=ft.Icons.QUIZ_OUTLINED,
             height=theme.CONTROL_HEIGHT,
             on_click=go_quizzes,
-        )
+        ),
+        ft.PopupMenuItem(
+            key="account-vocabulary",
+            content="Vocabulário",
+            icon=ft.Icons.TRANSLATE_ROUNDED,
+            height=theme.CONTROL_HEIGHT,
+            on_click=go_vocabulary,
+        ),
     ]
 
     if state.current_user is not None and state.current_user.role == UserRole.ADMIN:

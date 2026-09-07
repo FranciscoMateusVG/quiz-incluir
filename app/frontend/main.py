@@ -12,6 +12,7 @@ import theme
 from controllers.admin_controller import AdminController
 from controllers.auth_controller import AuthController
 from controllers.quiz_controller import QuizController
+from controllers.vocabulary_controller import VocabularyController
 from router import make_app
 from services.api import QuizApiClient
 from services.media import register_audio
@@ -131,8 +132,15 @@ def main(page: ft.Page) -> None:
     )
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
+    vocabulary_controller = VocabularyController(state, api)
 
-    app_component = make_app(state, auth, quiz_controller, admin_controller)
+    app_component = make_app(
+        state,
+        auth,
+        quiz_controller,
+        admin_controller,
+        vocabulary_controller,
+    )
 
     def restore_app_views() -> None:
         page.render_views(app_component)
