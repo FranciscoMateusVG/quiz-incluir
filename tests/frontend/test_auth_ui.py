@@ -549,6 +549,9 @@ def test_login_component_tree_has_named_minimum_size_auth_controls(monkeypatch) 
     monkeypatch.setattr(
         login_screen, "use_state", lambda value: (value, lambda _: None)
     )
+    monkeypatch.setattr(
+        login_screen, "use_ref", lambda value: SimpleNamespace(current=value)
+    )
     monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
     monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
 
@@ -1630,10 +1633,10 @@ def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
     monkeypatch,
 ) -> None:
     setter_values: list[tuple[str, object]] = []
+    password_ref = SimpleNamespace(current="secret")
     hook_values = iter(
         [
             ("091.499.916-80", lambda value: setter_values.append(("cpf", value))),
-            ("secret", lambda value: setter_values.append(("password", value))),
             (False, lambda value: setter_values.append(("eye", value))),
             ("", lambda value: setter_values.append(("error", value))),
             (False, lambda value: setter_values.append(("loading", value))),
@@ -1659,6 +1662,7 @@ def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
         title="", route="/", update=lambda: None, navigate=routes.append
     )
     monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_ref", lambda initial: password_ref)
     monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
     monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
 
@@ -1670,6 +1674,79 @@ def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
 
     assert ("eye", True) in setter_values
     assert validated == ["/quizzes"]
+    assert routes == ["/quizzes"]
+
+
+def test_password_keystrokes_keep_browser_buffer_until_reveal_and_submit(
+    monkeypatch,
+) -> None:
+    password_ref = SimpleNamespace(current="")
+    setter_values: list[tuple[str, object]] = []
+    state = AppState(return_route="/quizzes")
+    received: list[tuple[str, str]] = []
+
+    class FakeAuth:
+        def __init__(self) -> None:
+            self.state = state
+
+        async def login(self, cpf: str, password: str) -> bool:
+            received.append((cpf, password))
+            self.state.current_user = SimpleNamespace(role=UserRole.STUDENT)
+            return True
+
+        def mark_validated_route(self, route: str) -> None:
+            pass
+
+    routes: list[str] = []
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=routes.append
+    )
+    monkeypatch.setattr(login_screen, "use_ref", lambda initial: password_ref)
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    def render(*, password_visible: bool):
+        hook_values = iter(
+            [
+                (
+                    "091.499.916-80",
+                    lambda value: setter_values.append(("cpf", value)),
+                ),
+                (
+                    password_visible,
+                    lambda value: setter_values.append(("eye", value)),
+                ),
+                ("", lambda value: setter_values.append(("error", value))),
+                (False, lambda value: setter_values.append(("loading", value))),
+            ]
+        )
+        monkeypatch.setattr(
+            login_screen, "use_state", lambda initial: next(hook_values)
+        )
+        return login_screen.LoginScreen.__wrapped__(FakeAuth())
+
+    first_view = render(password_visible=False)
+    password_field = _keyed(first_view, "login-password")
+    final_value = "typing-sequence"
+    for index in range(1, len(final_value) + 1):
+        password_field.on_change(
+            SimpleNamespace(control=SimpleNamespace(value=final_value[:index]))
+        )
+
+    assert password_ref.current == final_value
+    assert setter_values == []
+
+    _keyed(first_view, "login-password-visibility").on_click(None)
+    assert setter_values == [("eye", True)]
+
+    revealed_view = render(password_visible=True)
+    revealed_password = _keyed(revealed_view, "login-password")
+    assert revealed_password.value == final_value
+    assert revealed_password.password is False
+
+    asyncio.run(_keyed(revealed_view, "login-submit").on_click(None))
+
+    assert received == [("09149991680", final_value)]
     assert routes == ["/quizzes"]
 
 

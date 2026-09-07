@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 import flet as ft
-from flet import component, use_effect, use_state
+from flet import component, use_effect, use_ref, use_state
 
 import theme
 from config import APP_TITLE
@@ -103,7 +103,7 @@ def _brand_logo(*, width: int, height: int) -> ft.Semantics:
 @component
 def LoginScreen(auth: AuthController):
     cpf, set_cpf = use_state("")
-    password, set_password = use_state("")
+    password_ref = use_ref("")
     password_visible, set_password_visible = use_state(False)
     error, set_error = use_state("")
     loading, set_loading = use_state(False)
@@ -130,6 +130,7 @@ def LoginScreen(auth: AuthController):
         except ValueError:
             set_error(_ERROR_MESSAGES["invalid_cpf"])
             return
+        password = password_ref.current or ""
         if not password:
             set_error(_ERROR_MESSAGES["invalid_request"])
             return
@@ -155,6 +156,12 @@ def LoginScreen(auth: AuthController):
 
     def on_cpf_change(e):
         set_cpf(format_cpf(e.control.value or ""))
+
+    def on_password_change(e):
+        # Let the browser own the live editing buffer. Scheduling a remote
+        # component render for every keystroke can replay an older controlled
+        # value over newer input when WebSocket events and patches overlap.
+        password_ref.current = e.control.value or ""
 
     def toggle_password(e):
         set_password_visible(not password_visible)
@@ -205,8 +212,8 @@ def LoginScreen(auth: AuthController):
     password_field = theme.text_field(
         key="login-password",
         width=theme.FORM_MAX_WIDTH,
-        value=password,
-        on_change=lambda e: set_password(e.control.value or ""),
+        value=password_ref.current,
+        on_change=on_password_change,
         label="Senha",
         hint_text="Digite sua senha",
         prefix_icon=ft.Icons.LOCK_OUTLINE,
