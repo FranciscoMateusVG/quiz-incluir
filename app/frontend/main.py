@@ -28,6 +28,26 @@ def canonicalize_client_ip(value: object) -> str | None:
         return None
 
 
+def handle_auth_required(
+    page: ft.Page,
+    state: AppState,
+    auth: AuthController,
+    failed_token: str,
+    failed_generation: int | None,
+) -> None:
+    """Apply one proven invalidation only to the request's owning session."""
+    if (
+        state.token != failed_token
+        or state.auth_session_generation != failed_generation
+    ):
+        return
+    auth.invalidate_validation()
+    state.clear_session()
+    state.remember_return_route(page.route)
+    state.auth_notice = "Sua sessão expirou. Entre novamente."
+    page.navigate("/")
+
+
 def install_session_revalidation(
     page: ft.Page, state: AppState, auth: AuthController
 ) -> None:
@@ -36,6 +56,11 @@ def install_session_revalidation(
     def on_disconnect(e) -> None:
         if state.token is None or state.current_user is None:
             return
+        # A disconnect ends the authority of every request started by the old
+        # client attachment without treating reconnect as logout. Only the
+        # forced /users/me check in on_connect can validate the retained token
+        # for the new attachment.
+        state.supersede_async_work()
         auth.invalidate_validation()
         # Flet 0.86.5 discards observable scheduling after detaching the
         # connection, while reconnect registration serializes the retained
@@ -85,16 +110,7 @@ def main(page: ft.Page) -> None:
     def on_auth_required(failed_token: str, failed_generation: int | None) -> None:
         # Only QuizApiClient's typed 401 auth_required path invokes this.
         # Outages and malformed upstream responses must preserve local state.
-        if (
-            state.token != failed_token
-            or state.auth_session_generation != failed_generation
-        ):
-            return
-        auth.invalidate_validation()
-        state.clear_session()
-        state.remember_return_route(page.route)
-        state.auth_notice = "Sua sessão expirou. Entre novamente."
-        page.navigate("/")
+        handle_auth_required(page, state, auth, failed_token, failed_generation)
 
     api.set_auth_required_handler(
         on_auth_required, lambda: state.auth_session_generation

@@ -159,16 +159,29 @@ def LoginScreen(auth: AuthController):
     def toggle_password(e):
         set_password_visible(not password_visible)
 
-    password_action = theme.icon_action(
+    password_label = "Ocultar senha" if password_visible else "Mostrar senha"
+    password_button = theme.icon_action(
         key="login-password-visibility",
         icon=(
             ft.Icons.VISIBILITY_OFF_OUTLINED
             if password_visible
             else ft.Icons.VISIBILITY_OUTLINED
         ),
-        tooltip="Ocultar senha" if password_visible else "Mostrar senha",
+        tooltip=password_label,
         on_click=toggle_password,
         icon_color=theme.MUTED_700,
+    )
+    # Flutter Web does not expose IconButton.tooltip as a computed AX name.
+    # One excluding Semantics node supplies the only accessible label while
+    # the inner 44px IconButton remains the literal pointer target.
+    password_action = ft.Semantics(
+        key="login-password-visibility-semantics",
+        label=password_label,
+        button=True,
+        focusable=True,
+        exclude_semantics=True,
+        on_tap=toggle_password,
+        content=password_button,
     )
 
     cpf_field = theme.text_field(

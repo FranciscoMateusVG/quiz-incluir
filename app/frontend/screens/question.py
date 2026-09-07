@@ -47,11 +47,23 @@ def QuestionScreen(state: AppState, controller: QuizController):
     }
 
     async def on_back(e):
+        try:
+            token, generation = controller.session_snapshot()
+        except RuntimeError:
+            return
         await stop_audio(ft.context.page)
+        if not controller.session_is_current(token, generation):
+            return
         controller.previous()
 
     async def on_submit(e):
+        try:
+            token, generation = controller.session_snapshot()
+        except RuntimeError:
+            return
         await stop_audio(ft.context.page)
+        if not controller.session_is_current(token, generation):
+            return
         response = widget.extract()
         if response is None:
             notify("Please answer the question first.", error=True)

@@ -91,7 +91,8 @@ def QuizPickerScreen(state: AppState, controller: QuizController, auth: AuthCont
     )
 
     search = ft.TextField(
-        hint_text="Search quizzes",
+        key="quiz-search",
+        label="Search quizzes",
         prefix_icon=ft.Icons.SEARCH,
         border_radius=theme.INPUT_RADIUS,
         border_color=theme.BORDER,

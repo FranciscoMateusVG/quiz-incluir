@@ -95,10 +95,15 @@ class AppState:
     def set_authenticated_session(self, token: str, user: User) -> None:
         """Atomically supersede the session identity for async-result ownership."""
         self.auth_session_generation += 1
+        self._clear_quiz_state()
         self.token = token
         self.email = user.email
         self.current_user = user
         self.auth_notice = ""
+
+    def supersede_async_work(self) -> None:
+        """Retain identity while revoking ownership of all in-flight UI work."""
+        self.auth_session_generation += 1
 
     def clear_session(self) -> None:
         """Clear auth and every attempt-bound value on logout or proven expiry."""
@@ -109,6 +114,11 @@ class AppState:
         self.return_route = None
         self.auth_notice = ""
         self.invalidate_auth_validation()
+
+        self._clear_quiz_state()
+
+    def _clear_quiz_state(self) -> None:
+        """Remove every value owned by the superseded authenticated session."""
         self.quiz = None
         self.questions = []
         self.answers = {}
