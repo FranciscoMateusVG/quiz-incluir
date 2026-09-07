@@ -137,7 +137,8 @@ def LoginScreen(auth: AuthController):
         set_loading(True)
         set_error("")
         try:
-            await auth.login(cpf_digits, password)
+            if not await auth.login(cpf_digits, password):
+                return
             is_admin = (
                 auth.state.current_user is not None
                 and auth.state.current_user.role == UserRole.ADMIN

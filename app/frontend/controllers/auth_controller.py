@@ -18,13 +18,31 @@ class AuthController:
         self._validation_lock = asyncio.Lock()
         self._validation_generation = 0
 
-    async def login(self, cpf: str, password: str) -> None:
-        token = await self.api.login(cpf, password)
-        user = await self.api.me(token.access_token)
-        self.state.token = token.access_token
-        self.state.email = user.email
-        self.state.current_user = user
-        self.state.auth_notice = ""
+    async def login(self, cpf: str, password: str) -> bool:
+        generation = self.state.auth_session_generation
+        active_token = self.state.token
+        try:
+            token = await self.api.login(cpf, password)
+            if (
+                self.state.auth_session_generation != generation
+                or self.state.token != active_token
+            ):
+                return False
+            user = await self.api.me(token.access_token)
+        except Exception:
+            if (
+                self.state.auth_session_generation != generation
+                or self.state.token != active_token
+            ):
+                return False
+            raise
+        if (
+            self.state.auth_session_generation != generation
+            or self.state.token != active_token
+        ):
+            return False
+        self.state.set_authenticated_session(token.access_token, user)
+        return True
 
     def mark_validated_route(self, route: str) -> None:
         """Trust the route against the fresh /users/me result from login."""
@@ -45,6 +63,7 @@ class AuthController:
         """
         async with self._validation_lock:
             token = self.state.token
+            session_generation = self.state.auth_session_generation
             if token is None or self.state.current_user is None:
                 return "invalid"
             if (
@@ -66,10 +85,11 @@ class AuthController:
                 # QuizApiClient invokes the global invalid-session transition
                 # exactly once for this proven outcome. Do not overwrite it.
                 if error.status_code == 401 and error.code == "auth_required":
-                    return "invalid"
+                    return "invalid" if self.state.token is None else "stale"
                 if (
                     generation == self._validation_generation
                     and self.state.token == token
+                    and self.state.auth_session_generation == session_generation
                     and self.state.auth_validation_route == route
                 ):
                     self.state.auth_validation_message = AUTH_UNAVAILABLE_MESSAGE
@@ -79,6 +99,7 @@ class AuthController:
                 if (
                     generation == self._validation_generation
                     and self.state.token == token
+                    and self.state.auth_session_generation == session_generation
                     and self.state.auth_validation_route == route
                 ):
                     self.state.auth_validation_message = AUTH_UNAVAILABLE_MESSAGE
@@ -88,6 +109,7 @@ class AuthController:
             if (
                 generation != self._validation_generation
                 or self.state.token != token
+                or self.state.auth_session_generation != session_generation
                 or self.state.auth_validation_route != route
             ):
                 return "stale"
@@ -103,6 +125,7 @@ class AuthController:
     async def logout(self) -> bool:
         """Clear local state always; report whether server revocation was proven."""
         token = self.state.token
+        generation = self.state.auth_session_generation
         confirmed = False
         try:
             if token is not None:
@@ -111,10 +134,18 @@ class AuthController:
         except Exception:
             confirmed = False
         finally:
-            self._validation_generation += 1
-            self.state.clear_session()
+            if (
+                self.state.auth_session_generation == generation
+                and self.state.token == token
+            ):
+                self._validation_generation += 1
+                self.state.clear_session()
 
-        if not confirmed:
+        if (
+            not confirmed
+            and self.state.auth_session_generation == generation + 1
+            and self.state.token is None
+        ):
             self.state.auth_notice = (
                 "Você saiu do Quiz, mas não foi possível confirmar o "
                 "encerramento da sessão no servidor."

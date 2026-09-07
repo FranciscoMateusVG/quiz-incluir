@@ -30,7 +30,8 @@ def app_bar(
         logout_in_flight = True
         try:
             await auth.logout()
-            page.navigate("/")
+            if auth.state.token is None:
+                page.navigate("/")
         finally:
             logout_in_flight = False
 

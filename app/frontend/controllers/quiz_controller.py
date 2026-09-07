@@ -17,17 +17,51 @@ class QuizController:
         self.state = state
         self.api = api
 
+    def _session_snapshot(self) -> tuple[str, int]:
+        token = self.state.token
+        if token is None:
+            raise RuntimeError("Authentication is required.")
+        return token, self.state.auth_session_generation
+
+    def _session_is_current(self, token: str, generation: int) -> bool:
+        return (
+            self.state.token == token
+            and self.state.auth_session_generation == generation
+        )
+
     # ---------- loading ----------
 
-    async def list_quizzes(self) -> list[Quiz]:
-        return await self.api.list_quizzes(self.state.token)
+    async def list_quizzes(self) -> list[Quiz] | None:
+        token, generation = self._session_snapshot()
+        try:
+            quizzes = await self.api.list_quizzes(token)
+        except Exception:
+            if not self._session_is_current(token, generation):
+                return None
+            raise
+        return quizzes if self._session_is_current(token, generation) else None
 
-    async def start(self, quiz: Quiz) -> None:
-        questions = [
-            await self.api.get_question(self.state.token, str(qid))
-            for qid in quiz.question_ids
-        ]
-        attempt = await self.api.start_attempt(self.state.token, str(quiz.id))
+    async def start(self, quiz: Quiz) -> bool:
+        token, generation = self._session_snapshot()
+        questions = []
+        for question_id in quiz.question_ids:
+            try:
+                question = await self.api.get_question(token, str(question_id))
+            except Exception:
+                if not self._session_is_current(token, generation):
+                    return False
+                raise
+            if not self._session_is_current(token, generation):
+                return False
+            questions.append(question)
+        try:
+            attempt = await self.api.start_attempt(token, str(quiz.id))
+        except Exception:
+            if not self._session_is_current(token, generation):
+                return False
+            raise
+        if not self._session_is_current(token, generation):
+            return False
         if not questions:
             raise ValueError("This quiz has no questions.")
         self.state.quiz = quiz
@@ -37,6 +71,7 @@ class QuizController:
         self.state.current_index = 0
         self.state.finished = False
         self.state.result = None
+        return True
 
     # ---------- navigation within the attempt ----------
 
@@ -62,23 +97,51 @@ class QuizController:
 
     # ---------- answering ----------
 
-    async def submit(self, question_id: str, response: dict) -> None:
-        await self.api.submit_answer(
-            self.state.token, self.state.attempt_id, question_id, response
-        )
+    async def submit(self, question_id: str, response: dict) -> bool:
+        token, generation = self._session_snapshot()
+        attempt_id = self.state.attempt_id
+        try:
+            await self.api.submit_answer(token, attempt_id, question_id, response)
+        except Exception:
+            if not self._session_is_current(token, generation):
+                return False
+            raise
+        if not self._session_is_current(token, generation):
+            return False
         self.state.answers = {**self.state.answers, question_id: response}
         if self.is_last:
-            await self.finish()
+            return await self._finish(token, generation, attempt_id) is not None
         else:
             self.state.current_index += 1
+        return True
 
-    async def finish(self) -> AttemptResult:
-        result = await self.api.finish_attempt(self.state.token, self.state.attempt_id)
+    async def _finish(
+        self, token: str, generation: int, attempt_id: str | None
+    ) -> AttemptResult | None:
+        try:
+            result = await self.api.finish_attempt(token, attempt_id)
+        except Exception:
+            if not self._session_is_current(token, generation):
+                return None
+            raise
+        if not self._session_is_current(token, generation):
+            return None
         self.state.result = result
         self.state.finished = True
         return result
 
+    async def finish(self) -> AttemptResult | None:
+        token, generation = self._session_snapshot()
+        return await self._finish(token, generation, self.state.attempt_id)
+
     # ---------- report ----------
 
-    async def download_report(self) -> bytes:
-        return await self.api.download_report_pdf(self.state.token, self.state.attempt_id)
+    async def download_report(self) -> bytes | None:
+        token, generation = self._session_snapshot()
+        try:
+            report = await self.api.download_report_pdf(token, self.state.attempt_id)
+        except Exception:
+            if not self._session_is_current(token, generation):
+                return None
+            raise
+        return report if self._session_is_current(token, generation) else None

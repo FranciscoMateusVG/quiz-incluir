@@ -57,9 +57,11 @@ def QuestionScreen(state: AppState, controller: QuizController):
             notify("Please answer the question first.", error=True)
             return
         try:
-            await controller.submit(str(question.id), response)
+            committed = await controller.submit(str(question.id), response)
         except Exception as ex:
             notify(f"Could not save your answer: {ex}", error=True)
+            return
+        if not committed:
             return
         if state.finished:
             ft.context.page.navigate("/results")

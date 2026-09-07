@@ -53,6 +53,8 @@ class AppState:
     auth_validation_status: str = "unverified"
     auth_validation_route: str | None = None
     auth_validation_message: str = ""
+    # Monotonic, server-only ownership marker for in-flight async work.
+    auth_session_generation: int = 0
 
     quiz: Quiz | None = None
     questions: list[Question] = dataclasses.field(default_factory=list)
@@ -90,8 +92,17 @@ class AppState:
         self.auth_validation_route = None
         self.auth_validation_message = ""
 
+    def set_authenticated_session(self, token: str, user: User) -> None:
+        """Atomically supersede the session identity for async-result ownership."""
+        self.auth_session_generation += 1
+        self.token = token
+        self.email = user.email
+        self.current_user = user
+        self.auth_notice = ""
+
     def clear_session(self) -> None:
         """Clear auth and every attempt-bound value on logout or proven expiry."""
+        self.auth_session_generation += 1
         self.token = None
         self.email = ""
         self.current_user = None

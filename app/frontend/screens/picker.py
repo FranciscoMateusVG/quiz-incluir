@@ -40,7 +40,10 @@ def QuizPickerScreen(state: AppState, controller: QuizController, auth: AuthCont
 
     async def load():
         try:
-            set_quizzes(await controller.list_quizzes())
+            loaded = await controller.list_quizzes()
+            if loaded is None:
+                return
+            set_quizzes(loaded)
             set_error("")
         except Exception as ex:
             set_error(f"Could not load quizzes: {ex}")
@@ -51,8 +54,8 @@ def QuizPickerScreen(state: AppState, controller: QuizController, auth: AuthCont
 
     async def start(quiz):
         try:
-            await controller.start(quiz)
-            ft.context.page.navigate("/quiz/0")
+            if await controller.start(quiz):
+                ft.context.page.navigate("/quiz/0")
         except Exception as ex:
             notify(f"Could not start quiz: {ex}", error=True)
 

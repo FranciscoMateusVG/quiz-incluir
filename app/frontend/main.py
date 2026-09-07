@@ -83,16 +83,23 @@ def main(page: ft.Page) -> None:
     )
     auth = AuthController(state, api)
 
-    def on_auth_required() -> None:
+    def on_auth_required(failed_token: str, failed_generation: int | None) -> None:
         # Only QuizApiClient's typed 401 auth_required path invokes this.
         # Outages and malformed upstream responses must preserve local state.
+        if (
+            state.token != failed_token
+            or state.auth_session_generation != failed_generation
+        ):
+            return
         auth.invalidate_validation()
         state.clear_session()
         state.remember_return_route(page.route)
         state.auth_notice = "Sua sessão expirou. Entre novamente."
         page.navigate("/")
 
-    api.set_auth_required_handler(on_auth_required)
+    api.set_auth_required_handler(
+        on_auth_required, lambda: state.auth_session_generation
+    )
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
 

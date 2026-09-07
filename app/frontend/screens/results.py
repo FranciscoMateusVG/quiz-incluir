@@ -4,7 +4,6 @@ import flet as ft
 from flet import component
 
 import theme
-from config import APP_TITLE
 from controllers.quiz_controller import QuizController
 from services.files import save_bytes
 from state.app_state import AppState
@@ -25,6 +24,8 @@ def ResultsScreen(state: AppState, controller: QuizController):
     async def download_pdf(e):
         try:
             pdf_bytes = await controller.download_report()
+            if pdf_bytes is None:
+                return
             await save_bytes(f"quiz-report-{state.attempt_id}.pdf", pdf_bytes)
         except Exception as ex:
             notify(f"Could not download report: {ex}", error=True)
