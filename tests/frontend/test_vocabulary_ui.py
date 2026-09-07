@@ -23,6 +23,7 @@ from quiz_shared.enums import UserRole  # noqa: E402
 from services.api import QuizApiClient  # noqa: E402
 from services.exceptions import QuizApiError  # noqa: E402
 from state.app_state import AppState  # noqa: E402
+from widgets.auth_guard import AuthGuard, protected_route_key  # noqa: E402
 from widgets.navbar import app_bar  # noqa: E402
 
 LOOKUP_ID = UUID("00000000-0000-4000-8000-000000000001")
@@ -329,6 +330,29 @@ def test_vocabulary_initial_tree_is_named_touchable_and_provider_silent(
     assert len(effects) == 2
 
 
+def test_vocabulary_results_are_named_accessible_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _authenticated_state()
+    state.vocabulary_lookup_id = str(LOOKUP_ID)
+    view, _, _, _ = _render_screen(
+        monkeypatch,
+        state,
+        SimpleNamespace(),
+        ["bom dia", _lookup(), "success", "Tradução pronta.", "idle", ""],
+    )
+
+    translation = _keyed(view, "vocabulary-translation")
+    definition = _keyed(view, "vocabulary-definition")
+
+    assert translation.semantics_label == "Tradução em inglês: good morning"
+    assert definition.semantics_label == (
+        "Definição em inglês: A greeting used in the morning."
+    )
+    assert translation.selectable is not True
+    assert definition.selectable is not True
+
+
 def test_vocabulary_lookup_suppresses_duplicate_submit_and_commits_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -545,3 +569,25 @@ def test_vocabulary_navigation_is_available_to_student_and_admin(
         assert item.height >= 44
         assert item.content == "Vocabulário"
         assert routes == ["/vocabulario"]
+        assert protected_route_key(routes[0]) == "/vocabulario"
+
+
+def test_vocabulary_account_destination_passes_the_protected_route_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _authenticated_state()
+    state.auth_validation_status = "valid"
+    state.auth_validation_route = "/vocabulario"
+    page = SimpleNamespace(route="/vocabulario", navigate=lambda route: None)
+    monkeypatch.setattr(vocabulary_screen.ft, "context", SimpleNamespace(page=page))
+
+    rendered = AuthGuard.__wrapped__(
+        state,
+        SimpleNamespace(),
+        lambda: "vocabulary-screen",
+    )
+
+    assert rendered == "vocabulary-screen"
+    assert protected_route_key("/vocabulario?from=account#translation") == (
+        "/vocabulario"
+    )

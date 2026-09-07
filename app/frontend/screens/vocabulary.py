@@ -253,10 +253,12 @@ def VocabularyScreen(
                     ft.Text(
                         active_result.translation,
                         key="vocabulary-translation",
+                        semantics_label=(
+                            f"Tradução em inglês: {active_result.translation}"
+                        ),
                         color=theme.TEXT_PRIMARY,
                         size=28,
                         weight=ft.FontWeight.BOLD,
-                        selectable=True,
                     ),
                     ft.Divider(height=1, color=theme.BORDER),
                     ft.Text(
@@ -268,9 +270,11 @@ def VocabularyScreen(
                     ft.Text(
                         active_result.definition,
                         key="vocabulary-definition",
+                        semantics_label=(
+                            f"Definição em inglês: {active_result.definition}"
+                        ),
                         color=theme.TEXT_PRIMARY,
                         size=17,
-                        selectable=True,
                     ),
                     ft.Container(height=theme.SPACING_SM),
                     ft.OutlinedButton(

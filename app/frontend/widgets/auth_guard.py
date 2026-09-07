@@ -17,7 +17,7 @@ from state.app_state import AppState
 def protected_route_key(route: str | None) -> str | None:
     """Return the local protected pathname, excluding query/fragment text."""
     path = urlsplit(route or "").path
-    if path in {"/quizzes", "/results", "/admin/grades"}:
+    if path in {"/quizzes", "/results", "/vocabulario", "/admin/grades"}:
         return path
     if path.startswith("/quiz/") or path.startswith("/admin/grades/"):
         return path
