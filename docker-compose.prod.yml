@@ -40,6 +40,14 @@ services:
     depends_on:
       quiz-incluir-db-e17b8a:
         condition: service_healthy
+    # The auth relay must reach the production Hono service by its exact
+    # allowlisted origin even while the Dokploy domain is disabled during the
+    # maintenance readiness gate. Dokploy only injects this network for an
+    # enabled domain, so membership must be explicit here. Keep the default
+    # network as well: that is the dedicated Quiz DB boundary.
+    networks:
+      - default
+      - dokploy-network
 
   # Dedicated Postgres instance for quiz-incluir ONLY — explicitly not shared
   # with the existing incluir prod DB (operator requirement, 2026-08-13).
@@ -62,3 +70,7 @@ services:
 
 volumes:
   quiz_pgdata:
+
+networks:
+  dokploy-network:
+    external: true
