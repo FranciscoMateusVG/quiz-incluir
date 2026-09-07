@@ -800,7 +800,7 @@ def test_question_does_not_navigate_when_stale_submit_returns_false(
         prompt="Is this sentence correct?",
         media=[],
     )
-    state = AppState(questions=[question])  # type: ignore[list-item]
+    state = AppState(questions=[question], finished=True)  # type: ignore[list-item]
 
     class Controller:
         async def submit(self, question_id: str, response: dict) -> bool:
