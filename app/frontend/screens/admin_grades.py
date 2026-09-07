@@ -27,7 +27,7 @@ from widgets.navbar import app_bar
 
 POLL_INTERVAL_S = 10
 
-_LEVEL_CHOICES = [("", "All levels")] + [
+_LEVEL_CHOICES = [("", "All")] + [
     (level.value, level.value) for level in CourseLevel
 ]
 
@@ -171,71 +171,44 @@ def AdminGradesScreen(
 
         return select
 
-    selected_level_label = next(
-        label for value, label in _LEVEL_CHOICES if value == level
-    )
-    # Flet 0.86.5's web Dropdown paints two unnamed buttons and exposes no
-    # named combobox/listbox node in Chromium's accessibility tree. Use the
-    # already-proven native PopupMenuButton pattern instead: the trigger is a
-    # real keyboard-actionable button, its tooltip supplies one stable AX
-    # name, and each 48px menu item performs the same level-filter update.
-    level_filter = ft.PopupMenuButton(
+    # Flet 0.86.5's web Dropdown and PopupMenuButton both lose their options
+    # from Chromium's accessibility tree. Keep the complete filter visible as
+    # native buttons instead: every value is named, keyboard actionable, and
+    # remains at least 44px without relying on an overlay.
+    level_filter = ft.Column(
         key="admin-level-filter",
-        tooltip="Class (level)",
-        menu_position=ft.PopupMenuPosition.UNDER,
-        items=[
-            ft.PopupMenuItem(
-                key=f"admin-level-option-{value or 'all'}",
-                content=label,
-                checked=value == level,
-                height=theme.CONTROL_HEIGHT,
-                on_click=choose_level(value),
-            )
-            for value, label in _LEVEL_CHOICES
-        ],
-        width=220,
-        height=theme.CONTROL_HEIGHT,
-        padding=0,
-        content=ft.Semantics(
-            exclude_semantics=True,
-            content=ft.Container(
-                width=220,
-                height=theme.CONTROL_HEIGHT,
-                padding=ft.Padding.symmetric(horizontal=12),
-                border=ft.Border.all(1, theme.BORDER),
-                border_radius=theme.INPUT_RADIUS,
-                bgcolor=theme.SURFACE,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Row(
-                    [
-                        ft.Column(
-                            [
-                                ft.Text(
-                                    "Class (level)",
-                                    size=11,
-                                    color=theme.TEXT_SECONDARY,
-                                ),
-                                ft.Text(
-                                    selected_level_label,
-                                    size=14,
-                                    color=theme.TEXT_PRIMARY,
-                                ),
-                            ],
-                            spacing=0,
-                            tight=True,
-                            expand=True,
-                        ),
-                        ft.Icon(
-                            ft.Icons.ARROW_DROP_DOWN,
-                            size=22,
-                            color=theme.MUTED_700,
-                        ),
-                    ],
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
+        controls=[
+            ft.Text(
+                "Class (level)",
+                size=13,
+                weight=ft.FontWeight.W_600,
+                color=theme.TEXT_SECONDARY,
             ),
-        ),
+            ft.Row(
+                controls=[
+                    (
+                        ft.FilledButton(
+                            label,
+                            key=f"admin-level-option-{value or 'all'}",
+                            height=theme.MIN_TARGET_SIZE,
+                            on_click=choose_level(value),
+                        )
+                        if value == level
+                        else ft.OutlinedButton(
+                            label,
+                            key=f"admin-level-option-{value or 'all'}",
+                            height=theme.MIN_TARGET_SIZE,
+                            on_click=choose_level(value),
+                        )
+                    )
+                    for value, label in _LEVEL_CHOICES
+                ],
+                wrap=True,
+                spacing=theme.SPACING_MD,
+                run_spacing=theme.SPACING_MD,
+            ),
+        ],
+        spacing=theme.SPACING_MD,
     )
 
     if visible_forbidden:
