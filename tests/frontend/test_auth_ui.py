@@ -1451,7 +1451,7 @@ def test_delayed_old_logout_finalizer_cannot_clear_or_navigate_new_session() -> 
     assert navigations == []
 
 
-def test_disconnect_neutralizes_validation_and_forces_server_tree_update() -> None:
+def test_disconnect_directly_replaces_retained_tree_with_neutral_view() -> None:
     state = _authenticated_state()
     state.auth_session_generation = 7
     retained_user = state.current_user
@@ -1461,7 +1461,11 @@ def test_disconnect_neutralizes_validation_and_forces_server_tree_update() -> No
         invalidate_validation=lambda: state.invalidate_auth_validation()
     )
     updates: list[str] = []
-    page = SimpleNamespace(route="/quizzes", update=lambda: updates.append("updated"))
+    page = SimpleNamespace(
+        route="/quizzes",
+        views=[SimpleNamespace(key="retained-protected-picker")],
+        update=lambda: updates.append("updated"),
+    )
 
     install_session_revalidation(page, state, auth)  # type: ignore[arg-type]
     page.on_disconnect(None)
@@ -1471,6 +1475,12 @@ def test_disconnect_neutralizes_validation_and_forces_server_tree_update() -> No
     assert state.auth_session_generation == 8
     assert state.auth_validation_status == "unverified"
     assert state.auth_validation_route is None
+    assert len(page.views) == 1
+    assert _keyed(page.views[0], "auth-check-loading") is not None
+    assert not any(
+        getattr(control, "key", None) == "retained-protected-picker"
+        for control in _walk_controls(page.views[0])
+    )
     assert updates == ["updated"]
 
 
@@ -1537,6 +1547,7 @@ def test_disconnect_advances_work_epoch_for_partial_auth_state(
 def test_reconnect_forces_authoritative_check_only_for_protected_route() -> None:
     state = _authenticated_state()
     calls: list[tuple[str, bool]] = []
+    restores: list[str] = []
 
     class FakeAuth:
         def invalidate_validation(self) -> None:
@@ -1546,12 +1557,15 @@ def test_reconnect_forces_authoritative_check_only_for_protected_route() -> None
             calls.append((route, force))
 
     page = SimpleNamespace(route="/results", update=lambda: None)
-    install_session_revalidation(page, state, FakeAuth())  # type: ignore[arg-type]
+    install_session_revalidation(  # type: ignore[arg-type]
+        page, state, FakeAuth(), lambda: restores.append(page.route)
+    )
     asyncio.run(page.on_connect(None))
     page.route = "/"
     asyncio.run(page.on_connect(None))
 
     assert calls == [("/results", True)]
+    assert restores == ["/results"]
 
 
 def test_route_mismatch_guard_never_invokes_protected_render(monkeypatch) -> None:

@@ -24,7 +24,7 @@ def protected_route_key(route: str | None) -> str | None:
     return None
 
 
-def _checking_view(route: str) -> ft.View:
+def auth_checking_view(route: str) -> ft.View:
     return ft.View(
         route=route,
         controls=[
@@ -61,7 +61,7 @@ def _redirecting(to: str):
         ft.context.page.navigate(to)
 
     use_effect(go, [])
-    return _checking_view(ft.context.page.route or "/")
+    return auth_checking_view(ft.context.page.route or "/")
 
 
 @component
@@ -123,7 +123,7 @@ def _AuthCheck(state: AppState, auth: AuthController, route: str):
             ],
         )
 
-    return _checking_view(route)
+    return auth_checking_view(route)
 
 
 @component

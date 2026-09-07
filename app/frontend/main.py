@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+from typing import Callable
 
 import flet as ft
 
@@ -15,7 +16,7 @@ from router import make_app
 from services.api import QuizApiClient
 from services.media import register_audio
 from state.app_state import AppState
-from widgets.auth_guard import protected_route_key
+from widgets.auth_guard import auth_checking_view, protected_route_key
 
 
 def canonicalize_client_ip(value: object) -> str | None:
@@ -49,7 +50,10 @@ def handle_auth_required(
 
 
 def install_session_revalidation(
-    page: ft.Page, state: AppState, auth: AuthController
+    page: ft.Page,
+    state: AppState,
+    auth: AuthController,
+    restore_app_views: Callable[[], None] | None = None,
 ) -> None:
     """Neutralize retained protected trees, then revalidate after reconnect."""
 
@@ -64,11 +68,14 @@ def install_session_revalidation(
         # forced /users/me check in on_connect can validate the retained token
         # for the new attachment.
         auth.invalidate_validation()
-        # Flet 0.86.5 discards observable scheduling after detaching the
-        # connection, while reconnect registration serializes the retained
-        # server Page before on_connect. The explicit update performs the
-        # component diff now (its network patch is intentionally dropped), so
-        # the retained tree already contains only AuthGuard's neutral gate.
+        # Flet 0.86.5 allows retained-session reuse only after disconnect sets
+        # the old connection to None, then invokes this synchronous handler
+        # before yielding. Replace the concrete Page tree here; observable
+        # component scheduling is dropped while detached, so invalidating
+        # state and calling update alone cannot protect REGISTER_CLIENT.
+        route = protected_route_key(page.route)
+        if route is not None:
+            page.views = [auth_checking_view(route)]
         page.update()
 
     async def on_connect(e) -> None:
@@ -79,6 +86,11 @@ def install_session_revalidation(
             and state.current_user is not None
         ):
             await auth.revalidate(route, force=True)
+            # The disconnect barrier deliberately replaced the component
+            # tree with a concrete neutral View. Rebuild the app only after
+            # the authoritative session result (valid, invalid, or outage).
+            if restore_app_views is not None:
+                restore_app_views()
 
     page.on_disconnect = on_disconnect
     page.on_connect = on_connect
@@ -120,8 +132,13 @@ def main(page: ft.Page) -> None:
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
 
-    install_session_revalidation(page, state, auth)
-    page.render_views(make_app(state, auth, quiz_controller, admin_controller))
+    app_component = make_app(state, auth, quiz_controller, admin_controller)
+
+    def restore_app_views() -> None:
+        page.render_views(app_component)
+
+    install_session_revalidation(page, state, auth, restore_app_views)
+    restore_app_views()
 
 
 if __name__ == "__main__":
