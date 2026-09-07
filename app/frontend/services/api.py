@@ -7,6 +7,8 @@ network calls don't block the Flet UI event loop.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 
 from models.admin import AdminAttemptRow, QuestionStatRow
@@ -20,9 +22,20 @@ from services.exceptions import QuizApiError
 
 
 class QuizApiClient:
-    def __init__(self, base_url: str | None = None, timeout: float = API_TIMEOUT):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float = API_TIMEOUT,
+        trusted_client_ip: str | None = None,
+    ):
         self.base_url = (base_url or API_URL).rstrip("/")
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._trusted_client_ip = trusted_client_ip
+        self._auth_required_handler: Callable[[], None] | None = None
+
+    def set_auth_required_handler(self, handler: Callable[[], None]) -> None:
+        """Install the per-page invalid-session transition after construction."""
+        self._auth_required_handler = handler
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -34,27 +47,75 @@ class QuizApiClient:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
-    @staticmethod
-    def _handle(resp: httpx.Response):
+    def _handle(self, resp: httpx.Response):
         if resp.status_code >= 400:
-            detail = resp.text
+            detail: object = resp.text
+            code = None
+            message = None
+            retry_after_seconds = None
             try:
-                detail = resp.json().get("detail", detail)
+                body = resp.json()
+                if isinstance(body, dict):
+                    # Phase A errors are top-level. Retain legacy nested detail
+                    # for older endpoints while the backend transition lands.
+                    code = body.get("code")
+                    message = body.get("message")
+                    retry_after_seconds = body.get("retry_after_seconds")
+                    detail = body.get("detail", message or detail)
             except Exception:
                 pass
-            raise QuizApiError(resp.status_code, detail)
+            error = QuizApiError(
+                resp.status_code,
+                detail,
+                code=code if isinstance(code, str) else None,
+                message=message if isinstance(message, str) else None,
+                retry_after_seconds=(
+                    retry_after_seconds
+                    if isinstance(retry_after_seconds, int)
+                    and not isinstance(retry_after_seconds, bool)
+                    else None
+                ),
+            )
+            if (
+                resp.status_code == 401
+                and error.code == "auth_required"
+                and self._auth_required_handler is not None
+            ):
+                self._auth_required_handler()
+            raise error
         if resp.status_code == 204:
             return None
         return resp.json()
 
     # ---------- auth ----------
 
-    async def login(self, email: str, password: str = "") -> Token:
+    async def login(self, cpf: str, password: str = "") -> Token:
+        headers = None
+        if self._trusted_client_ip is not None:
+            # This dedicated attribution header is emitted only by the
+            # same-process loopback relay. Never forward a browser XFF value.
+            headers = {"X-Quiz-Client-IP": self._trusted_client_ip}
         resp = await self._client.post(
             f"{self.base_url}/api/v1/auth/token",
-            data={"username": email, "password": password},
+            data={"username": cpf, "password": password},
+            headers=headers,
         )
         return Token.model_validate(self._handle(resp))
+
+    async def logout(self, token: str) -> None:
+        resp = await self._client.post(
+            f"{self.base_url}/api/v1/auth/logout", headers=self._headers(token)
+        )
+        if resp.status_code != 204:
+            if resp.status_code >= 400:
+                self._handle(resp)
+            raise QuizApiError(
+                resp.status_code,
+                "logout response was not empty 204",
+                code="auth_invalid_response",
+                message="Não foi possível confirmar o encerramento da sessão.",
+            )
+        return None
 
     async def me(self, token: str) -> User:
         resp = await self._client.get(

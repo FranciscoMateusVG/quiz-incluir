@@ -20,6 +20,7 @@ from quiz_shared.enums import CourseLevel
 
 import theme
 from controllers.admin_controller import AdminController
+from controllers.auth_controller import AuthController
 from services.exceptions import QuizApiError
 from state.app_state import AppState
 from widgets.navbar import app_bar
@@ -70,7 +71,9 @@ def _build_boxplot_png(attempts) -> str:
 
 
 @component
-def AdminGradesScreen(state: AppState, controller: AdminController):
+def AdminGradesScreen(
+    state: AppState, controller: AdminController, auth: AuthController
+):
     params = use_route_params()
     quiz_id = params.get("quiz_id", "")
 
@@ -197,7 +200,9 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
             ft.Column(
                 [
                     ft.Text(
-                        "Per-question correct / wrong", size=18, weight=ft.FontWeight.BOLD
+                        "Per-question correct / wrong",
+                        size=18,
+                        weight=ft.FontWeight.BOLD,
                     ),
                     ft.DataTable(
                         columns=[
@@ -258,7 +263,7 @@ def AdminGradesScreen(state: AppState, controller: AdminController):
     return ft.View(
         route=f"/admin/grades/{quiz_id}",
         bgcolor=theme.BACKGROUND,
-        appbar=app_bar(state, title="Class Grades"),
+        appbar=app_bar(state, auth, title="Class Grades"),
         controls=[
             theme.responsive(
                 body,

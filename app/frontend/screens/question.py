@@ -66,16 +66,20 @@ def QuestionScreen(state: AppState, controller: QuizController):
 
     back_btn = ft.OutlinedButton(
         "Back",
+        key="question-back",
         icon=ft.Icons.ARROW_BACK,
         on_click=on_back,
         disabled=idx == 0,
         expand=True,
+        height=theme.CONTROL_HEIGHT,
     )
     next_btn = ft.FilledButton(
         "Finish" if is_last else "Next",
+        key="question-submit",
         icon=ft.Icons.CHECK if is_last else ft.Icons.ARROW_FORWARD,
         on_click=on_submit,
         expand=True,
+        height=theme.CONTROL_HEIGHT,
     )
 
     quiz_media = state.quiz.media if state.quiz else []

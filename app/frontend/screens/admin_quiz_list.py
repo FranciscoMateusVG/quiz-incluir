@@ -7,12 +7,15 @@ from flet import component, use_effect, use_state
 
 import theme
 from controllers.admin_controller import AdminController
+from controllers.auth_controller import AuthController
 from state.app_state import AppState
 from widgets.navbar import app_bar
 
 
 @component
-def AdminQuizListScreen(state: AppState, controller: AdminController):
+def AdminQuizListScreen(
+    state: AppState, controller: AdminController, auth: AuthController
+):
     quizzes, set_quizzes = use_state([])
     error, set_error = use_state("")
     loading, set_loading = use_state(True)
@@ -123,7 +126,7 @@ def AdminQuizListScreen(state: AppState, controller: AdminController):
     return ft.View(
         route="/admin/grades",
         bgcolor=theme.BACKGROUND,
-        appbar=app_bar(state, title="Class Grades"),
+        appbar=app_bar(state, auth, title="Class Grades"),
         controls=[
             theme.responsive(
                 body,

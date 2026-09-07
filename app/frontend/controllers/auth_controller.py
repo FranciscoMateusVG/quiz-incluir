@@ -11,14 +11,30 @@ class AuthController:
         self.state = state
         self.api = api
 
-    async def login(self, email: str, password: str) -> None:
-        token = await self.api.login(email, password)
+    async def login(self, cpf: str, password: str) -> None:
+        token = await self.api.login(cpf, password)
         user = await self.api.me(token.access_token)
         self.state.token = token.access_token
         self.state.email = user.email
         self.state.current_user = user
+        self.state.auth_notice = ""
 
-    def logout(self) -> None:
-        self.state.token = None
-        self.state.email = ""
-        self.state.current_user = None
+    async def logout(self) -> bool:
+        """Clear local state always; report whether server revocation was proven."""
+        token = self.state.token
+        confirmed = False
+        try:
+            if token is not None:
+                await self.api.logout(token)
+                confirmed = True
+        except Exception:
+            confirmed = False
+        finally:
+            self.state.clear_session()
+
+        if not confirmed:
+            self.state.auth_notice = (
+                "Você saiu do Quiz, mas não foi possível confirmar o "
+                "encerramento da sessão no servidor."
+            )
+        return confirmed

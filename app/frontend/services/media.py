@@ -23,10 +23,10 @@ from flet_audio import Audio
 
 from services.page_store import get_or_create
 
-# A valid placeholder source, so the service satisfies the "src must be a
-# string" contract at construction. It is replaced with a real URL whenever a
-# question's audio player attaches.
-PLACEHOLDER_SRC = "https://storage.googleapis.com/quiz_public_bucket/LE_listening_C1_Birthday_parties.mp3"
+# A local, valid silent source satisfies the service's construction contract
+# without fetching quiz media on the logged-out page. It is replaced with the
+# real URL whenever a question's audio player attaches.
+PLACEHOLDER_SRC = "/silence.wav"
 
 
 def resolve_media_url(url: str | None, base_url: str) -> str:

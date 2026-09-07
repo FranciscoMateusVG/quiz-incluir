@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 import flet as ft
 
 import config
@@ -13,6 +15,16 @@ from router import make_app
 from services.api import QuizApiClient
 from services.media import register_audio
 from state.app_state import AppState
+
+
+def canonicalize_client_ip(value: object) -> str | None:
+    """Validate Flet's server-owned ingress IP before the loopback relay."""
+    if value is None:
+        return None
+    try:
+        return str(ipaddress.ip_address(str(value)))
+    except ValueError:
+        return None
 
 
 def main(page: ft.Page) -> None:
@@ -35,7 +47,20 @@ def main(page: ft.Page) -> None:
     page.appbar = ft.AppBar(title=ft.Text(config.APP_TITLE), center_title=True)
 
     state = AppState()
-    api = QuizApiClient(config.API_URL)
+    api = QuizApiClient(
+        config.API_URL,
+        trusted_client_ip=canonicalize_client_ip(page.client_ip),
+    )
+
+    def on_auth_required() -> None:
+        # Only QuizApiClient's typed 401 auth_required path invokes this.
+        # Outages and malformed upstream responses must preserve local state.
+        state.clear_session()
+        state.remember_return_route(page.route)
+        state.auth_notice = "Sua sessão expirou. Entre novamente."
+        page.navigate("/")
+
+    api.set_auth_required_handler(on_auth_required)
     auth = AuthController(state, api)
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
@@ -45,4 +70,3 @@ def main(page: ft.Page) -> None:
 
 if __name__ == "__main__":
     ft.run(main, no_cdn=True)
-

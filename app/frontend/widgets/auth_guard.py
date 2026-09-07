@@ -38,6 +38,7 @@ def require_auth(
     `admin_only`, has the admin role) — otherwise redirect away.
     """
     if state.token is None or state.current_user is None:
+        state.remember_return_route(ft.context.page.route)
         return _redirecting("/")
     if admin_only and state.current_user.role != UserRole.ADMIN:
         return _redirecting("/quizzes")
