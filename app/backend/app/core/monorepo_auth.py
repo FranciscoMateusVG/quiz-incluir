@@ -9,17 +9,27 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, NewType
 
 import httpx
 from email_validator import EmailNotValidError, validate_email
+from pydantic import TypeAdapter, ValidationError
 
 from app.core.config import settings
+from quiz_shared.schemas import CanonicalIdentityEmail
 
 
 AUTH_HOP_TIMEOUT_SECONDS = 4.0
 AUTH_FLOW_TIMEOUT_SECONDS = 12.0
+MAX_SESSION_COOKIE_PAIR_BYTES = 4096
+MAX_RETRY_AFTER_SECONDS = 10
 _CREDENTIAL_REJECTION_CODES = {"INVALID_EMAIL_OR_PASSWORD"}
+_SESSION_COOKIE_NAMES = {
+    "better-auth.session_token",
+    "__Secure-better-auth.session_token",
+}
+VerifiedIdentityEmail = NewType("VerifiedIdentityEmail", str)
+_canonical_identity_adapter = TypeAdapter(CanonicalIdentityEmail)
 
 
 class AuthFailureKind(StrEnum):
@@ -51,13 +61,22 @@ class SessionState(StrEnum):
 @dataclass(frozen=True)
 class SessionCheck:
     state: SessionState
-    email: str | None = None
+    email: VerifiedIdentityEmail | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, SessionState):
+            raise ValueError("invalid session state")
+        if self.state is SessionState.VALID:
+            if not isinstance(self.email, str) or not self.email:
+                raise ValueError("valid session requires an email")
+        elif self.email is not None:
+            raise ValueError("invalid session cannot carry an email")
 
 
 @dataclass(frozen=True)
 class AuthenticatedSession:
     cookie: str
-    email: str
+    email: VerifiedIdentityEmail
 
 
 def _safe_json(response: httpx.Response) -> dict[str, Any] | None:
@@ -72,46 +91,102 @@ def _retry_after_seconds(response: httpx.Response) -> int | None:
     value = response.headers.get("retry-after")
     if value is None or not value.isascii() or not value.isdecimal():
         return None
-    parsed = int(value)
-    return parsed if parsed > 0 else None
+    significant = value.lstrip("0")
+    if not significant:
+        return None
+    if len(significant) > len(str(MAX_RETRY_AFTER_SECONDS)):
+        return MAX_RETRY_AFTER_SECONDS
+    return min(int(significant), MAX_RETRY_AFTER_SECONDS)
+
+
+def _new_auth_client() -> httpx.AsyncClient:
+    """Build the private auth client without ambient proxy or redirect trust."""
+
+    return httpx.AsyncClient(
+        timeout=AUTH_HOP_TIMEOUT_SECONDS,
+        trust_env=False,
+        follow_redirects=False,
+    )
+
+
+def _validate_session_cookie_pair(
+    cookie: object, *, failure_kind: AuthFailureKind
+) -> str:
+    """Validate one opaque BetterAuth cookie pair without transforming it."""
+
+    if not isinstance(cookie, str) or not cookie:
+        raise MonorepoAuthError(failure_kind)
+    try:
+        encoded = cookie.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise MonorepoAuthError(failure_kind) from exc
+    if (
+        len(encoded) > MAX_SESSION_COOKIE_PAIR_BYTES
+        or ";" in cookie
+        or "," in cookie
+    ):
+        raise MonorepoAuthError(failure_kind)
+
+    name, separator, value = cookie.partition("=")
+    if separator != "=" or name not in _SESSION_COOKIE_NAMES or not value:
+        raise MonorepoAuthError(failure_kind)
+
+    # RFC 6265 cookie-octet: %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E.
+    # This excludes whitespace, controls, DQUOTE, comma, semicolon, backslash,
+    # and non-ASCII input while preserving the opaque pair byte-for-byte.
+    if any(
+        not (
+            code == 0x21
+            or 0x23 <= code <= 0x2B
+            or 0x2D <= code <= 0x3A
+            or 0x3C <= code <= 0x5B
+            or 0x5D <= code <= 0x7E
+        )
+        for code in map(ord, value)
+    ):
+        raise MonorepoAuthError(failure_kind)
+    return cookie
 
 
 def _extract_session_cookie(response: httpx.Response) -> str:
     session_cookies: list[str] = []
     for header in response.headers.get_list("set-cookie"):
         pair = header.split(";", 1)[0]
-        name, separator, value = pair.partition("=")
-        if (
-            not separator
-            or not name
-            or not value
-            or name != name.strip()
-            or "\r" in pair
-            or "\n" in pair
-        ):
-            continue
-        if name.lower().endswith("session_token"):
-            session_cookies.append(pair)
+        name = pair.partition("=")[0]
+        if name in _SESSION_COOKIE_NAMES:
+            session_cookies.append(
+                _validate_session_cookie_pair(
+                    pair, failure_kind=AuthFailureKind.INVALID_RESPONSE
+                )
+            )
     if len(session_cookies) != 1:
         raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
     return session_cookies[0]
 
 
-def _validated_email(value: object) -> str:
+def _validated_email(value: object) -> VerifiedIdentityEmail:
     if not isinstance(value, str) or not value.strip():
         raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
     try:
         # ``.test`` is deliberately used by the isolated real-BetterAuth
         # fixtures. test_environment relaxes only reserved test-domain policy;
         # syntax validation remains active.
-        return validate_email(
+        normalized = validate_email(
             value, check_deliverability=False, test_environment=True
         ).normalized
-    except EmailNotValidError as exc:
+        safe_identity = _canonical_identity_adapter.validate_python(normalized)
+        return VerifiedIdentityEmail(safe_identity)
+    except (EmailNotValidError, ValidationError) as exc:
         raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE) from exc
 
 
-async def _session_check(client: httpx.AsyncClient, cookie: str) -> SessionCheck:
+async def _session_check(
+    client: httpx.AsyncClient,
+    cookie: str,
+    *,
+    cookie_failure_kind: AuthFailureKind = AuthFailureKind.INVALID_SESSION,
+) -> SessionCheck:
+    cookie = _validate_session_cookie_pair(cookie, failure_kind=cookie_failure_kind)
     try:
         response = await client.get(
             f"{settings.MONOREPO_AUTH_URL}/api/auth/get-session",
@@ -139,11 +214,20 @@ async def _session_check(client: httpx.AsyncClient, cookie: str) -> SessionCheck
     if not isinstance(data, dict):
         raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
 
-    session = data.get("session")
-    user = data.get("user")
-    if not session:
+    if "session" not in data or data["session"] is None:
         return SessionCheck(SessionState.INVALID)
+    session = data["session"]
+    user = data.get("user")
     if not isinstance(session, dict) or not isinstance(user, dict):
+        raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
+    session_id = session.get("id")
+    user_id = user.get("id")
+    if (
+        not isinstance(session_id, str)
+        or not session_id.strip()
+        or not isinstance(user_id, str)
+        or not user_id.strip()
+    ):
         raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
     return SessionCheck(SessionState.VALID, _validated_email(user.get("email")))
 
@@ -153,7 +237,7 @@ async def sign_in(cpf: str, password: str, client_ip: str) -> AuthenticatedSessi
 
     try:
         async with asyncio.timeout(AUTH_FLOW_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(timeout=AUTH_HOP_TIMEOUT_SECONDS) as client:
+            async with _new_auth_client() as client:
                 try:
                     response = await client.post(
                         f"{settings.MONOREPO_AUTH_URL}/api/auth/sign-in/email",
@@ -193,7 +277,11 @@ async def sign_in(cpf: str, password: str, client_ip: str) -> AuthenticatedSessi
                     raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
 
                 cookie = _extract_session_cookie(response)
-                session = await _session_check(client, cookie)
+                session = await _session_check(
+                    client,
+                    cookie,
+                    cookie_failure_kind=AuthFailureKind.INVALID_RESPONSE,
+                )
                 if session.state is not SessionState.VALID or session.email is None:
                     raise MonorepoAuthError(AuthFailureKind.INVALID_RESPONSE)
                 return AuthenticatedSession(cookie=cookie, email=session.email)
@@ -204,9 +292,12 @@ async def sign_in(cpf: str, password: str, client_ip: str) -> AuthenticatedSessi
 async def get_session(cookie: str) -> SessionCheck:
     """Return a typed session verdict; outages never become invalid sessions."""
 
+    cookie = _validate_session_cookie_pair(
+        cookie, failure_kind=AuthFailureKind.INVALID_SESSION
+    )
     try:
         async with asyncio.timeout(AUTH_FLOW_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(timeout=AUTH_HOP_TIMEOUT_SECONDS) as client:
+            async with _new_auth_client() as client:
                 return await _session_check(client, cookie)
     except TimeoutError as exc:
         raise MonorepoAuthError(AuthFailureKind.UNAVAILABLE) from exc
@@ -215,9 +306,12 @@ async def get_session(cookie: str) -> SessionCheck:
 async def sign_out(cookie: str) -> None:
     """Revoke only this cookie and prove that it no longer authenticates."""
 
+    cookie = _validate_session_cookie_pair(
+        cookie, failure_kind=AuthFailureKind.INVALID_SESSION
+    )
     try:
         async with asyncio.timeout(AUTH_FLOW_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(timeout=AUTH_HOP_TIMEOUT_SECONDS) as client:
+            async with _new_auth_client() as client:
                 current = await _session_check(client, cookie)
                 if current.state is SessionState.INVALID:
                     raise MonorepoAuthError(AuthFailureKind.INVALID_SESSION)

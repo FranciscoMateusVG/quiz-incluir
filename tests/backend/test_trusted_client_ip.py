@@ -110,8 +110,26 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(configured.trusted_proxy_networks, ())
 
+    def test_settings_accepts_only_the_two_known_auth_origins(self) -> None:
+        for origin in ("http://hono-app:3003", "http://127.0.0.1:4503"):
+            with self.subTest(origin=origin):
+                configured = Settings(
+                    _env_file=None,
+                    MONOREPO_AUTH_URL=origin,
+                    TRUSTED_PROXY_CIDRS="",
+                )
+                self.assertEqual(configured.MONOREPO_AUTH_URL, origin)
+
     def test_settings_reject_public_or_ambiguous_auth_origins(self) -> None:
         for origin in (
+            "http://localhost:3003",
+            "http://hono-app",
+            "http://hono-app:4503",
+            "http://hono-app:3003/",
+            "http://127.0.0.1:3003",
+            "http://127.0.0.2:4503",
+            "http://10.24.0.7:3003",
+            "http://[::1]:4503",
             "https://hono-app:3003",
             "http://auth.example.com",
             "http://8.8.8.8:3003",

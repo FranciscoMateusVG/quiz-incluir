@@ -1,7 +1,6 @@
 from functools import lru_cache
-from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
+from ipaddress import IPv4Network, IPv6Network
 from typing import List
-from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,13 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.client_ip import parse_trusted_proxy_cidrs
 
 
-_PRIVATE_AUTH_NETWORKS = (
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("fc00::/7"),
-)
-_ALLOWED_AUTH_SERVICE_NAMES = {"hono-app", "localhost"}
+_ALLOWED_MONOREPO_AUTH_URLS = {
+    "http://hono-app:3003",
+    "http://127.0.0.1:4503",
+}
 
 
 class Settings(BaseSettings):
@@ -49,7 +45,7 @@ class Settings(BaseSettings):
         return v
 
     MONOREPO_AUTH_URL: str = Field(
-        default="http://localhost:3003",
+        default="http://hono-app:3003",
         description="Base URL of the Programa Incluir monorepo's auth API (hono-app / BetterAuth). "
         "The quiz backend delegates all end-user authentication to this service.",
     )
@@ -57,35 +53,9 @@ class Settings(BaseSettings):
     @field_validator("MONOREPO_AUTH_URL")
     @classmethod
     def require_private_auth_url(cls, v: str) -> str:
-        parsed = urlparse(v)
-        host = parsed.hostname
-        if (
-            parsed.scheme != "http"
-            or not host
-            or parsed.path not in {"", "/"}
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError(
-                "MONOREPO_AUTH_URL must be an internal HTTP service origin"
-            )
-        try:
-            address = ip_address(host)
-        except ValueError:
-            if host not in _ALLOWED_AUTH_SERVICE_NAMES:
-                raise ValueError("MONOREPO_AUTH_URL hostname is not allowlisted")
-        else:
-            private_address = any(
-                address.version == network.version and address in network
-                for network in _PRIVATE_AUTH_NETWORKS
-            )
-            if not (private_address or address.is_loopback):
-                raise ValueError(
-                    "MONOREPO_AUTH_URL must use loopback or RFC1918/ULA private IP"
-                )
-        return v.rstrip("/")
+        if v not in _ALLOWED_MONOREPO_AUTH_URLS:
+            raise ValueError("MONOREPO_AUTH_URL is not an approved auth service origin")
+        return v
 
     TRUSTED_PROXY_CIDRS: str = Field(
         default="",

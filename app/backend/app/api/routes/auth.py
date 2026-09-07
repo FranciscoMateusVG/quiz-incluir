@@ -164,7 +164,7 @@ async def token(request: Request, db: AsyncSession = Depends(get_db)) -> Token:
 
     # The local identity/role join is derived only from the separately verified
     # BetterAuth get-session payload returned by sign_in().
-    await crud_user.get_or_create_by_email(db, authenticated.email)
+    await crud_user.get_or_create_from_verified_email(db, authenticated.email)
     return Token(access_token=authenticated.cookie)
 
 
