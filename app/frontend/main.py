@@ -78,7 +78,6 @@ def main(page: ft.Page) -> None:
 
     state = AppState()
     api = QuizApiClient(
-        config.API_URL,
         trusted_client_ip=canonicalize_client_ip(page.client_ip),
     )
     auth = AuthController(state, api)

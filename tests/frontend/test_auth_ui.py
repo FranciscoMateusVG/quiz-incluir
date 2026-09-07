@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "app" / "frontend"))
 
 from controllers.auth_controller import AuthController  # noqa: E402
 from controllers.quiz_controller import QuizController  # noqa: E402
+import config as frontend_config  # noqa: E402
 from main import canonicalize_client_ip, install_session_revalidation  # noqa: E402
 import screens.login as login_screen  # noqa: E402
 from screens.login import (  # noqa: E402
@@ -26,6 +27,7 @@ from screens.login import (  # noqa: E402
 )
 from services.exceptions import QuizApiError  # noqa: E402
 from services.api import QuizApiClient  # noqa: E402
+import services.api as api_service  # noqa: E402
 from state.app_state import AppState, resolve_return_route  # noqa: E402
 from quiz_shared.enums import QuestionType, UserRole  # noqa: E402
 from widgets.answers.answer_factory import answer_factory  # noqa: E402
@@ -178,6 +180,36 @@ def test_ip_attribution_is_not_a_login_ui_or_controller_input() -> None:
     )
 
 
+def test_quiz_api_client_pins_private_loopback_and_ignores_public_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_kwargs: dict[str, object] = {}
+
+    class ClientProbe:
+        def __init__(self, **kwargs: object) -> None:
+            constructor_kwargs.update(kwargs)
+
+    monkeypatch.setattr(api_service.httpx, "AsyncClient", ClientProbe)
+    monkeypatch.setattr(
+        frontend_config, "API_URL", "https://attacker-controlled.example.test"
+    )
+
+    api = QuizApiClient(timeout=3.25)
+
+    assert tuple(inspect.signature(QuizApiClient).parameters) == (
+        "timeout",
+        "trusted_client_ip",
+    )
+    assert frontend_config.PRIVATE_API_ORIGIN == "http://127.0.0.1:8000"
+    assert api.base_url == "http://127.0.0.1:8000"
+    assert constructor_kwargs == {
+        "base_url": "http://127.0.0.1:8000",
+        "timeout": 3.25,
+        "trust_env": False,
+        "follow_redirects": False,
+    }
+
+
 def test_login_threads_one_trusted_client_ip_header_and_other_calls_do_not() -> None:
     requests: list[httpx.Request] = []
 
@@ -192,7 +224,6 @@ def test_login_threads_one_trusted_client_ip_header_and_other_calls_do_not() -> 
 
     async def exercise() -> None:
         api = QuizApiClient(
-            "https://quiz.example.test",
             trusted_client_ip="2001:db8::42",
         )
         await api._client.aclose()
@@ -228,7 +259,6 @@ def test_login_omits_client_ip_headers_when_runtime_has_no_trusted_value() -> No
 
     async def exercise() -> None:
         api = QuizApiClient(
-            "https://quiz.example.test",
             trusted_client_ip=None,
         )
         await api._client.aclose()
@@ -282,7 +312,7 @@ def test_typed_error_payload_keeps_code_and_retry_metadata() -> None:
             "retry_after_seconds": 37,
         },
     )
-    api = QuizApiClient("https://quiz.example.test")
+    api = QuizApiClient()
 
     with pytest.raises(QuizApiError) as raised:
         api._handle(response)
@@ -309,7 +339,7 @@ def test_only_typed_auth_required_401_invalidates_local_session(
     status_code: int, code: str, expected_invalidations: int
 ) -> None:
     invalidations: list[str] = []
-    api = QuizApiClient("https://quiz.example.test")
+    api = QuizApiClient()
     api.set_auth_required_handler(
         lambda token, generation: invalidations.append(
             f"invalidated:{token}:{generation}"
@@ -350,7 +380,7 @@ def test_api_logout_requires_204_for_confirmation(status_code: int) -> None:
         )
 
     async def exercise() -> QuizApiError:
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         try:
@@ -378,7 +408,7 @@ def test_api_logout_treats_204_as_confirmed() -> None:
         return httpx.Response(204)
 
     async def exercise() -> None:
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         try:
@@ -862,7 +892,7 @@ def test_api_absolute_deadline_cancels_dripping_response_body() -> None:
         return httpx.Response(200, stream=stream)
 
     async def exercise() -> QuizApiError:
-        api = QuizApiClient("https://quiz.example.test", timeout=0.05)
+        api = QuizApiClient(timeout=0.05)
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         try:
@@ -890,7 +920,7 @@ def test_every_authenticated_body_path_invalidates_once_on_top_level_401(
         return httpx.Response(401, json={"code": "auth_required", "message": "sign in"})
 
     async def exercise() -> None:
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         api.set_auth_required_handler(
@@ -922,7 +952,7 @@ def test_authenticated_outage_never_invalidates_local_session(
         return httpx.Response(status, json={"code": code, "message": "retry"})
 
     async def exercise() -> None:
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         api.set_auth_required_handler(
@@ -946,7 +976,7 @@ def test_logout_deadline_still_clears_local_state() -> None:
         return httpx.Response(204, stream=_DelayedBody([b""], delay=0.1))
 
     async def exercise() -> tuple[bool, AppState]:
-        api = QuizApiClient("https://quiz.example.test", timeout=0.02)
+        api = QuizApiClient(timeout=0.02)
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         state = _authenticated_state()
@@ -1056,7 +1086,7 @@ def test_revalidation_proven_401_clears_complete_session_once() -> None:
                 401, json={"code": "auth_required", "message": "sign in"}
             )
 
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         state = _authenticated_state()
@@ -1093,7 +1123,7 @@ def test_delayed_old_token_401_cannot_clear_new_session() -> None:
                 401, json={"code": "auth_required", "message": "sign in"}
             )
 
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         state = _authenticated_state()
@@ -1175,7 +1205,7 @@ def test_delayed_401_is_rejected_by_generation_when_token_text_is_reused() -> No
                 401, json={"code": "auth_required", "message": "sign in"}
             )
 
-        api = QuizApiClient("https://quiz.example.test")
+        api = QuizApiClient()
         await api._client.aclose()
         api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         state = _authenticated_state()

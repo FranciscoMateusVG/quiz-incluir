@@ -18,19 +18,23 @@ from models.attempt import Attempt, AttemptResult
 from models.quiz import Quiz
 from models.question import Question
 from models.attempt import Token, User
-from config import API_TIMEOUT, API_URL
+from config import API_TIMEOUT, PRIVATE_API_ORIGIN
 from services.exceptions import QuizApiError
 
 
 class QuizApiClient:
     def __init__(
         self,
-        base_url: str | None = None,
         timeout: float = API_TIMEOUT,
         trusted_client_ip: str | None = None,
     ):
-        self.base_url = (base_url or API_URL).rstrip("/")
-        self._client = httpx.AsyncClient(timeout=timeout)
+        self.base_url = PRIVATE_API_ORIGIN
+        self._client = httpx.AsyncClient(
+            base_url=PRIVATE_API_ORIGIN,
+            timeout=timeout,
+            trust_env=False,
+            follow_redirects=False,
+        )
         self._operation_timeout = timeout
         self._trusted_client_ip = trusted_client_ip
         self._auth_required_handler: Callable[[str, int | None], None] | None = None
