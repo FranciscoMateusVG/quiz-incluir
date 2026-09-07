@@ -1,0 +1,135 @@
+# Quiz Incluir — STAGING stack (aperture-ztid5).
+#
+# Purpose: run the combined single-process Quiz service against a REAL but
+# ISOLATED Incluir BetterAuth, with synthetic identities and its own database.
+# Never production auth, never production data, never production identities.
+#
+# ─── TOPOLOGY, and why it is shaped this way ──────────────────────────────
+# Quiz reaches BetterAuth SERVER-SIDE (Python httpx, container-to-container),
+# so the isolated Hono needs NO public route, NO Traefik label, NO domain and
+# NO TLS certificate. Only the Quiz backend is published. That keeps the test
+# auth surface entirely internal, which is both simpler and a smaller blast
+# radius than exposing a second public auth host.
+#
+# ─── NAMESPACING (mandatory) ──────────────────────────────────────────────
+# container_name is globally unique per Docker host. Every name here carries a
+# -staging suffix so this stack can never collide with, or attach to, the
+# production quiz-incluir-*-e17b8a containers on the same host.
+#
+# ─── WHAT DOKPLOY INJECTS ─────────────────────────────────────────────────
+# Traefik labels, port publication and dokploy-network membership are injected
+# at deploy time — do NOT add them here. Only the backend carries a domain.
+
+services:
+  # ── The combined Quiz service (FastAPI + SQLAdmin + Flet, one process) ──
+  quiz-incluir-backend-staging:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: quiz-incluir-backend-staging
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://quiz:${QUIZ_DB_PASSWORD}@quiz-incluir-db-staging:5432/quiz
+      # Server-side relay to the ISOLATED Hono on the internal network.
+      # Not a public host: quiz never makes a browser-side auth call.
+      MONOREPO_AUTH_URL: http://quiz-staging-hono:3003
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # DENY-ALL during preparation. This is the EXACT observed Traefik peer
+      # as a /32 (or /128), supplied only after the network is rendered —
+      # NEVER a network range such as 10.0.1.0/24, which would trust every
+      # container able to reach that network.
+      TRUSTED_PROXY_CIDRS: ""
+    depends_on:
+      quiz-incluir-db-staging:
+        condition: service_healthy
+      quiz-staging-hono:
+        condition: service_healthy
+    networks: [quiz-staging-net]
+
+  quiz-incluir-db-staging:
+    image: postgres:16
+    container_name: quiz-incluir-db-staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quiz
+      POSTGRES_PASSWORD: ${QUIZ_DB_PASSWORD}
+      POSTGRES_DB: quiz
+    volumes:
+      - quiz_staging_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quiz -d quiz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [quiz-staging-net]
+
+  # ── Isolated Incluir BetterAuth. INTERNAL ONLY — no domain, no cert. ────
+  # Image is built from the PINNED monorepo revision (see STAGING-NOTES.md);
+  # Dokploy cannot build cross-repo, so the tag must exist on the host.
+  quiz-staging-hono:
+    image: ${STAGING_HONO_IMAGE}
+    container_name: quiz-staging-hono
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://e2e:${STAGING_HONO_DB_PASSWORD}@quiz-staging-hono-db:5432/incluir
+      REDIS_URL: redis://quiz-staging-hono-redis:6379
+      # Internal origin: quiz calls this server-side, so the auth URL is the
+      # in-network address. No public auth host is required by the flow.
+      BETTER_AUTH_URL: http://quiz-staging-hono:3003
+      BETTER_AUTH_SECRET: ${STAGING_BETTER_AUTH_SECRET}
+      # No browser hits Hono directly in this topology, so no CORS origin is
+      # required. If a browser-side auth call is ever introduced, this and the
+      # public-exposure decision must both be revisited.
+      CORS_ORIGINS: ""
+      NODE_ENV: production
+      PORT: "3003"
+      LOG_LEVEL: warn
+    depends_on:
+      quiz-staging-hono-db:
+        condition: service_healthy
+      quiz-staging-hono-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    networks: [quiz-staging-net]
+
+  quiz-staging-hono-db:
+    image: postgres:16-alpine
+    container_name: quiz-staging-hono-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: e2e
+      POSTGRES_PASSWORD: ${STAGING_HONO_DB_PASSWORD}
+      POSTGRES_DB: incluir
+    volumes:
+      - quiz_staging_hono_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2e -d incluir"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [quiz-staging-net]
+
+  quiz-staging-hono-redis:
+    image: redis:7-alpine
+    container_name: quiz-staging-hono-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [quiz-staging-net]
+
+volumes:
+  quiz_staging_pgdata:
+  quiz_staging_hono_pgdata:
+
+networks:
+  quiz-staging-net:
+    driver: bridge
