@@ -67,6 +67,20 @@ def ensure_audio(page: ft.Page) -> Audio:
     return register_audio(page)
 
 
+def _replace_audio_service(page: ft.Page, previous: Audio) -> Audio:
+    """Replace a timed-out client service so its late events stay isolated."""
+    replacement = Audio(src=PLACEHOLDER_SRC, volume=1.0)
+    replacement.on_state_change = previous.on_state_change
+    previous.on_loaded = None
+    previous.on_state_change = None
+    if previous in page.services:
+        page.services.remove(previous)
+    page.data["audio"] = replacement
+    page.services.append(replacement)
+    page.update()
+    return replacement
+
+
 def set_audio_src(page: ft.Page, resolved_url: str) -> Audio:
     """Point the shared service at ``resolved_url`` and refresh the client."""
     audio = ensure_audio(page)
@@ -108,38 +122,45 @@ async def prepare_audio_bytes(
     if not isinstance(content, bytes) or not content:
         raise ValueError("pronunciation audio must be nonempty bytes")
     is_current = is_current or (lambda: True)
-    audio = ensure_audio(page)
-    loaded = asyncio.Event()
-    previous_on_loaded = audio.on_loaded
-    deadline = asyncio.get_running_loop().time() + timeout
-
-    def on_loaded(event=None) -> None:
-        loaded.set()
-
-    async def apply_source(source: str | bytes) -> bool:
+    lock = get_or_create(page, "audio_prepare_lock", asyncio.Lock)
+    async with lock:
         if not is_current():
             return False
-        loaded.clear()
-        audio.src = source
-        audio.update()
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            raise TimeoutError("audio source load timed out")
-        await asyncio.wait_for(loaded.wait(), timeout=remaining)
-        return is_current()
+        audio = ensure_audio(page)
+        loaded = asyncio.Event()
+        previous_on_loaded = audio.on_loaded
+        deadline = asyncio.get_running_loop().time() + timeout
 
-    audio.on_loaded = on_loaded
-    try:
-        # A prior timed-out byte load will not emit a second loaded event for
-        # byte-equal content. Force a real source transition before retrying.
-        if isinstance(audio.src, bytes):
-            if not await apply_source(PLACEHOLDER_SRC):
+        def on_loaded(event=None) -> None:
+            loaded.set()
+
+        async def apply_source(source: str | bytes) -> bool:
+            if not is_current():
                 return False
-        return await apply_source(content)
-    finally:
-        if audio.on_loaded is on_loaded:
-            audio.on_loaded = previous_on_loaded
+            loaded.clear()
+            audio.src = source
             audio.update()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError("audio source load timed out")
+            await asyncio.wait_for(loaded.wait(), timeout=remaining)
+            return is_current()
+
+        try:
+            audio.on_loaded = on_loaded
+            try:
+                # A prior byte source needs a real transition before retrying.
+                if isinstance(audio.src, bytes):
+                    if not await apply_source(PLACEHOLDER_SRC):
+                        return False
+                return await apply_source(content)
+            finally:
+                if audio.on_loaded is on_loaded:
+                    audio.on_loaded = previous_on_loaded
+                    audio.update()
+        except TimeoutError:
+            _replace_audio_service(page, audio)
+            raise
 
 
 async def play_prepared_audio(

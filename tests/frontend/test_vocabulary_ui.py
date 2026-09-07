@@ -759,12 +759,13 @@ def test_generated_audio_helpers_prepare_then_play_with_bounded_invoke(
                 self.on_loaded(None)
 
     audio = Audio()
+    page = SimpleNamespace(data={})
     monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
 
     with pytest.raises(ValueError):
-        asyncio.run(media_service.prepare_audio_bytes(object(), b""))
+        asyncio.run(media_service.prepare_audio_bytes(page, b""))
 
-    asyncio.run(media_service.prepare_audio_bytes(object(), b"ID3-audio"))
+    asyncio.run(media_service.prepare_audio_bytes(page, b"ID3-audio"))
     assert audio.src == b"ID3-audio"
     assert calls == ["update", "update"]
 
@@ -780,10 +781,11 @@ def test_generated_audio_helpers_prepare_then_play_with_bounded_invoke(
     assert calls[-2:] == ["pause", "update"]
 
 
-def test_generated_audio_prepare_timeout_restores_previous_loaded_handler(
+def test_generated_audio_prepare_timeout_replaces_the_client_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous = object()
+    replacements: list[object] = []
 
     class Audio:
         src: str | bytes = media_service.PLACEHOLDER_SRC
@@ -793,26 +795,61 @@ def test_generated_audio_prepare_timeout_restores_previous_loaded_handler(
             return None
 
     audio = Audio()
+    page = SimpleNamespace(data={})
     monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+    monkeypatch.setattr(
+        media_service,
+        "_replace_audio_service",
+        lambda page, previous: replacements.append(previous),
+    )
 
     with pytest.raises(TimeoutError):
         asyncio.run(
             media_service.prepare_audio_bytes(
-                object(),
+                page,
                 b"ID3-audio",
                 timeout=0.001,
             )
         )
 
-    assert audio.on_loaded is previous
+    assert replacements == [audio]
 
 
-def test_generated_audio_prepare_retry_forces_a_source_transition(
+def test_audio_service_replacement_isolates_late_events_and_preserves_state_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_handler = object()
+    old_audio = SimpleNamespace(
+        on_loaded=object(),
+        on_state_change=state_handler,
+    )
+    new_audio = SimpleNamespace(on_loaded=None, on_state_change=None)
+    updates: list[str] = []
+    page = SimpleNamespace(
+        data={"audio": old_audio},
+        services=[old_audio],
+        update=lambda: updates.append("updated"),
+    )
+    monkeypatch.setattr(media_service, "Audio", lambda **kwargs: new_audio)
+
+    replacement = media_service._replace_audio_service(page, old_audio)
+
+    assert replacement is new_audio
+    assert old_audio.on_loaded is None
+    assert old_audio.on_state_change is None
+    assert new_audio.on_state_change is state_handler
+    assert page.data["audio"] is new_audio
+    assert page.services == [new_audio]
+    assert updates == ["updated"]
+
+
+def test_generated_audio_prepare_retry_uses_replacement_without_refetching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Audio:
         src: str | bytes = media_service.PLACEHOLDER_SRC
         on_loaded = None
+        load_immediately = False
         byte_updates = 0
 
         def update(self):
@@ -820,18 +857,27 @@ def test_generated_audio_prepare_retry_forces_a_source_transition(
                 return
             if isinstance(self.src, bytes):
                 self.byte_updates += 1
-                if self.byte_updates > 1:
+                if self.load_immediately:
                     self.on_loaded(None)
-            else:
-                self.on_loaded(None)
 
-    audio = Audio()
-    monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+    old_audio = Audio()
+    new_audio = Audio()
+    new_audio.load_immediately = True
+    current = [old_audio]
+    page = SimpleNamespace(data={})
+    monkeypatch.setattr(media_service, "ensure_audio", lambda page: current[0])
+
+    def replace(page, previous):
+        assert previous is old_audio
+        current[0] = new_audio
+        return new_audio
+
+    monkeypatch.setattr(media_service, "_replace_audio_service", replace)
 
     with pytest.raises(TimeoutError):
         asyncio.run(
             media_service.prepare_audio_bytes(
-                object(),
+                page,
                 b"ID3-audio",
                 timeout=0.001,
             )
@@ -839,69 +885,75 @@ def test_generated_audio_prepare_retry_forces_a_source_transition(
 
     asyncio.run(
         media_service.prepare_audio_bytes(
-            object(),
+            page,
             b"ID3-audio",
             timeout=0.1,
         )
     )
 
-    assert audio.src == b"ID3-audio"
-    assert audio.byte_updates == 2
+    assert current[0] is new_audio
+    assert old_audio.byte_updates == 1
+    assert new_audio.byte_updates == 1
+    assert new_audio.src == b"ID3-audio"
 
 
 def test_stale_audio_prepare_cannot_overwrite_a_newer_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    updates: list[tuple[str | bytes, object]] = []
+    late_handlers: list[object] = []
 
     class Audio:
-        src: str | bytes = b"old-audio"
+        src: str | bytes = media_service.PLACEHOLDER_SRC
         on_loaded = None
 
         def update(self):
-            if self.on_loaded is not None:
-                updates.append((self.src, self.on_loaded))
+            if isinstance(self.src, bytes) and self.on_loaded is not None:
+                late_handlers.append(self.on_loaded)
 
-    audio = Audio()
-    old_is_current = True
-    monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+    old_audio = Audio()
+    new_audio = Audio()
+    current = [old_audio]
+    page = SimpleNamespace(data={})
+    monkeypatch.setattr(media_service, "ensure_audio", lambda page: current[0])
 
-    async def scenario() -> tuple[bool, bool]:
-        nonlocal old_is_current
-        old = asyncio.create_task(
-            media_service.prepare_audio_bytes(
-                object(),
+    def replace(page, previous):
+        assert previous is old_audio
+        current[0] = new_audio
+        return new_audio
+
+    monkeypatch.setattr(media_service, "_replace_audio_service", replace)
+
+    async def scenario() -> bool:
+        with pytest.raises(TimeoutError):
+            await media_service.prepare_audio_bytes(
+                page,
                 b"old-audio",
-                timeout=0.5,
-                is_current=lambda: old_is_current,
+                timeout=0.001,
             )
-        )
-        while len(updates) < 1:
-            await asyncio.sleep(0)
+        assert len(late_handlers) == 1
 
-        old_is_current = False
         newer = asyncio.create_task(
             media_service.prepare_audio_bytes(
-                object(),
+                page,
                 b"new-audio",
                 timeout=0.5,
-                is_current=lambda: True,
             )
         )
-        while len(updates) < 2:
+        while new_audio.on_loaded is None:
             await asyncio.sleep(0)
 
-        updates[1][1](None)
-        newer_result = await newer
-        updates[0][1](None)
-        old_result = await old
-        return old_result, newer_result
+        late_handlers[0](None)
+        await asyncio.sleep(0)
+        assert not newer.done()
 
-    old_result, newer_result = asyncio.run(scenario())
+        new_audio.on_loaded(None)
+        return await newer
 
-    assert old_result is False
+    newer_result = asyncio.run(scenario())
+
     assert newer_result is True
-    assert audio.src == b"new-audio"
+    assert current[0] is new_audio
+    assert new_audio.src == b"new-audio"
 
 
 def test_vocabulary_navigation_is_available_to_student_and_admin(
