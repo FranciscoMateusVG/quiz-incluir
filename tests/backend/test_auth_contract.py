@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI
+from pydantic import ValidationError
 from starlette.requests import Request
 
 
@@ -34,12 +35,17 @@ from app.api.deps import get_current_user  # noqa: E402
 from app.core import monorepo_auth  # noqa: E402
 from app.core.client_ip import ORIGINAL_CLIENT_SCOPE_KEY  # noqa: E402
 from app.core.cpf import is_valid_cpf, normalize_cpf  # noqa: E402
+from app.core.database import get_db  # noqa: E402
 from app.core.monorepo_auth import (  # noqa: E402
     AuthFailureKind,
     AuthenticatedSession,
     MonorepoAuthError,
     SessionState,
+    VerifiedIdentityEmail,
 )
+from app.crud import user as crud_user_module  # noqa: E402
+from app.models import User  # noqa: E402
+from app.schemas.user import UserCreate, UserUpdate  # noqa: E402
 from quiz_shared.enums import CourseLevel, UserRole  # noqa: E402
 from quiz_shared.schemas import (  # noqa: E402
     AdminAttemptRow,
@@ -63,14 +69,14 @@ def _json_response(
 def _mock_auth_client(
     handler: Callable[[httpx.Request], httpx.Response],
 ):
-    """Replace only the auth module's client constructor with MockTransport."""
+    """Replace only the private auth client factory with MockTransport."""
 
     transport = httpx.MockTransport(handler)
 
-    def factory(*_args, **_kwargs) -> httpx.AsyncClient:
+    def factory() -> httpx.AsyncClient:
         return _REAL_ASYNC_CLIENT(transport=transport)
 
-    return patch.object(monorepo_auth.httpx, "AsyncClient", side_effect=factory)
+    return patch.object(monorepo_auth, "_new_auth_client", side_effect=factory)
 
 
 def _form_request(
@@ -102,6 +108,45 @@ def _form_request(
         "client": peer,
         "server": ("quiz.test", 80),
         ORIGINAL_CLIENT_SCOPE_KEY: peer,
+    }
+    return Request(scope, receive)
+
+
+def _streaming_form_request(
+    chunks: tuple[bytes, ...],
+    *,
+    content_length: bytes | None = None,
+) -> Request:
+    position = 0
+
+    async def receive():
+        nonlocal position
+        if position >= len(chunks):
+            return {"type": "http.disconnect"}
+        chunk = chunks[position]
+        position += 1
+        return {
+            "type": "http.request",
+            "body": chunk,
+            "more_body": position < len(chunks),
+        }
+
+    headers = [(b"content-type", b"application/x-www-form-urlencoded")]
+    if content_length is not None:
+        headers.append((b"content-length", content_length))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/auth/token",
+        "raw_path": b"/api/v1/auth/token",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("198.51.100.10", 43100),
+        "server": ("quiz.test", 80),
+        ORIGINAL_CLIENT_SCOPE_KEY: ("198.51.100.10", 43100),
     }
     return Request(scope, receive)
 
@@ -237,7 +282,124 @@ class AuthenticatedEmailResponseTests(unittest.TestCase):
                 )
 
 
+class UserIdentityBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    def test_public_write_schemas_remain_strict_and_email_is_not_updatable(
+        self,
+    ) -> None:
+        UserCreate.model_validate({"email": "learner@example.com", "level": "B1"})
+        with self.assertRaises(ValidationError):
+            UserCreate.model_validate(
+                {"email": "e2e-geovana@incluir.test", "level": "B1"}
+            )
+        for payload in (
+            {"email": "admin@example.com"},
+            {"email": "other@example.com"},
+            {"unknown": "value"},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                UserUpdate.model_validate(payload)
+        self.assertEqual(
+            UserUpdate.model_validate({"level": "B2"}).level, CourseLevel.B2
+        )
+        schema = UserUpdate.model_json_schema()
+        self.assertNotIn("email", schema["properties"])
+        self.assertFalse(schema["additionalProperties"])
+
+    async def test_patch_email_is_rejected_before_crud_write(self) -> None:
+        current = User(
+            email="admin@example.com",
+            level=CourseLevel.B1,
+            role=UserRole.ADMIN,
+        )
+
+        async def verified_user() -> User:
+            return current
+
+        async def fake_db():
+            yield object()
+
+        endpoint_app = FastAPI()
+        endpoint_app.include_router(users_routes.router, prefix="/api/v1/users")
+        endpoint_app.dependency_overrides[get_current_user] = verified_user
+        endpoint_app.dependency_overrides[get_db] = fake_db
+        update = AsyncMock()
+        transport = httpx.ASGITransport(app=endpoint_app)
+        with patch.object(crud_user_module, "update", update):
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://quiz.test"
+            ) as client:
+                response = await client.patch(
+                    "/api/v1/users/me", json={"email": "student@example.com"}
+                )
+
+        self.assertEqual(response.status_code, 422)
+        update.assert_not_awaited()
+
+    async def test_verified_fixture_first_login_creates_local_student_b1(self) -> None:
+        class FakeDB:
+            def __init__(self) -> None:
+                self.added: list[User] = []
+                self.commits = 0
+                self.refreshes = 0
+
+            def add(self, user: User) -> None:
+                self.added.append(user)
+
+            async def commit(self) -> None:
+                self.commits += 1
+
+            async def refresh(self, _user: User) -> None:
+                self.refreshes += 1
+
+        db = FakeDB()
+        lookup = AsyncMock(return_value=None)
+        email = VerifiedIdentityEmail("e2e-geovana@incluir.test")
+        with patch.object(crud_user_module, "get_by_email", lookup):
+            user = await crud_user_module.get_or_create_from_verified_email(db, email)
+
+        self.assertEqual(user.email, str(email))
+        self.assertEqual(user.level, CourseLevel.B1)
+        self.assertEqual(user.role, UserRole.STUDENT)
+        self.assertEqual(db.added, [user])
+        self.assertEqual((db.commits, db.refreshes), (1, 1))
+
+    async def test_existing_local_admin_is_returned_without_mutation(self) -> None:
+        existing = User(
+            email="admin@example.com",
+            level=CourseLevel.B4,
+            role=UserRole.ADMIN,
+        )
+        db = unittest.mock.MagicMock()
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        with patch.object(
+            crud_user_module, "get_by_email", AsyncMock(return_value=existing)
+        ):
+            result = await crud_user_module.get_or_create_from_verified_email(
+                db, VerifiedIdentityEmail("admin@example.com")
+            )
+
+        self.assertIs(result, existing)
+        self.assertEqual(result.role, UserRole.ADMIN)
+        self.assertEqual(result.level, CourseLevel.B4)
+        db.add.assert_not_called()
+        db.commit.assert_not_awaited()
+        db.refresh.assert_not_awaited()
+
+
 class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_private_client_disables_ambient_proxies_and_redirects(self) -> None:
+        constructor = unittest.mock.MagicMock(return_value=object())
+        with patch.object(monorepo_auth.httpx, "AsyncClient", constructor):
+            result = monorepo_auth._new_auth_client()
+
+        self.assertIs(result, constructor.return_value)
+        constructor.assert_called_once_with(
+            timeout=monorepo_auth.AUTH_HOP_TIMEOUT_SECONDS,
+            trust_env=False,
+            follow_redirects=False,
+        )
+
     async def test_sends_exact_cpf_payload_and_single_ip_then_joins_verified_email(
         self,
     ) -> None:
@@ -250,7 +412,10 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
                 return _json_response(
                     200,
                     {
-                        "user": {"email": "untrusted-sign-in-body@example.test"},
+                        "user": {
+                            "id": "u",
+                            "email": "untrusted-sign-in-body@example.test",
+                        },
                         "session": {"id": "new-session"},
                     },
                     headers=[
@@ -267,7 +432,7 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
                 200,
                 {
                     "session": {"id": "new-session"},
-                    "user": {"email": "Verified.User@Example.test"},
+                    "user": {"id": "u", "email": "Verified.User@Example.test"},
                 },
             )
 
@@ -304,7 +469,10 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
             # A valid cookie probe must not make a malformed sign-in body valid.
             return _json_response(
                 200,
-                {"session": {"id": "s"}, "user": {"email": "user@example.test"}},
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "user@example.test"},
+                },
             )
 
         with _mock_auth_client(handler):
@@ -329,7 +497,10 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.headers["cookie"], exact_pair)
             return _json_response(
                 200,
-                {"session": {"id": "s"}, "user": {"email": "user@example.test"}},
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "user@example.test"},
+                },
             )
 
         with _mock_auth_client(handler):
@@ -366,6 +537,67 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     raised.exception.kind, AuthFailureKind.INVALID_RESPONSE
                 )
+
+    async def test_hostile_or_unsupported_issued_cookie_is_invalid_response(
+        self,
+    ) -> None:
+        cases = (
+            "attacker.session_token=opaque",
+            "Better-Auth.session_token=opaque",
+            "better-auth.session_token=",
+            "better-auth.session_token=has space",
+            "better-auth.session_token=has,comma",
+            "better-auth.session_token=has\\backslash",
+            "better-auth.session_token=" + "a" * 4096,
+        )
+        for cookie in cases:
+            with self.subTest(cookie=cookie[:80]):
+
+                def handler(_request: httpx.Request) -> httpx.Response:
+                    return _json_response(
+                        200,
+                        {"user": {"id": "u"}, "session": {"id": "s"}},
+                        headers={"set-cookie": f"{cookie}; Path=/; HttpOnly"},
+                    )
+
+                with _mock_auth_client(handler):
+                    with self.assertRaises(MonorepoAuthError) as raised:
+                        await monorepo_auth.sign_in(
+                            "09149991680", "not-logged", "192.0.2.1"
+                        )
+                self.assertEqual(
+                    raised.exception.kind, AuthFailureKind.INVALID_RESPONSE
+                )
+
+    async def test_both_exact_supported_cookie_names_are_accepted(self) -> None:
+        for name in (
+            "better-auth.session_token",
+            "__Secure-better-auth.session_token",
+        ):
+            with self.subTest(name=name):
+                pair = f"{name}=opaque%2Fvalue=="
+
+                def handler(request: httpx.Request) -> httpx.Response:
+                    if request.url.path.endswith("sign-in/email"):
+                        return _json_response(
+                            200,
+                            {"user": {"id": "u"}, "session": {"id": "s"}},
+                            headers={"set-cookie": f"{pair}; Path=/; HttpOnly"},
+                        )
+                    self.assertEqual(request.headers["cookie"], pair)
+                    return _json_response(
+                        200,
+                        {
+                            "session": {"id": "s"},
+                            "user": {"id": "u", "email": "user@example.test"},
+                        },
+                    )
+
+                with _mock_auth_client(handler):
+                    result = await monorepo_auth.sign_in(
+                        "09149991680", "not-logged", "192.0.2.1"
+                    )
+                self.assertEqual(result.cookie, pair)
 
     async def test_upstream_sign_in_error_classification(self) -> None:
         cases = (
@@ -421,6 +653,30 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.kind, expected)
                 self.assertEqual(raised.exception.retry_after_seconds, retry_after)
 
+    async def test_retry_after_is_positive_ascii_and_clamped_to_window(self) -> None:
+        for value, expected in (
+            ("1", 1),
+            ("10", 10),
+            ("11", 10),
+            ("9" * 1000, 10),
+        ):
+            with self.subTest(value=value[:20]):
+
+                def handler(_request: httpx.Request) -> httpx.Response:
+                    return _json_response(
+                        429,
+                        {"code": "RATE_LIMITED"},
+                        headers={"Retry-After": value},
+                    )
+
+                with _mock_auth_client(handler):
+                    with self.assertRaises(MonorepoAuthError) as raised:
+                        await monorepo_auth.sign_in(
+                            "09149991680", "not-logged", "192.0.2.1"
+                        )
+                self.assertEqual(raised.exception.kind, AuthFailureKind.RATE_LIMITED)
+                self.assertEqual(raised.exception.retry_after_seconds, expected)
+
     async def test_malformed_known_error_and_rate_limit_without_timing_are_invalid_response(
         self,
     ) -> None:
@@ -432,6 +688,11 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
                 429,
                 json.dumps({"code": "RATE_LIMITED"}).encode(),
                 {"Retry-After": "tomorrow"},
+            ),
+            (
+                429,
+                json.dumps({"code": "RATE_LIMITED"}).encode(),
+                {"Retry-After": "0"},
             ),
         )
         for status_code, body, headers in cases:
@@ -460,6 +721,14 @@ class MonorepoSignInContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_typed_session_result_invariants_reject_impossible_states(self) -> None:
+        with self.assertRaises(ValueError):
+            monorepo_auth.SessionCheck(SessionState.VALID)
+        with self.assertRaises(ValueError):
+            monorepo_auth.SessionCheck(
+                SessionState.INVALID, VerifiedIdentityEmail("user@example.test")
+            )
+
     async def test_valid_session_returns_only_validated_email(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(
@@ -467,13 +736,36 @@ class SessionContractTests(unittest.IsolatedAsyncioTestCase):
             )
             return _json_response(
                 200,
-                {"session": {"id": "s"}, "user": {"email": "Learner@Example.test"}},
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "Learner@Example.test"},
+                },
             )
 
         with _mock_auth_client(handler):
             result = await monorepo_auth.get_session("better-auth.session_token=opaque")
         self.assertEqual(result.state, SessionState.VALID)
         self.assertEqual(result.email, "Learner@example.test")
+
+    async def test_cookie_pair_exact_size_boundary_is_preserved(self) -> None:
+        name = "better-auth.session_token"
+        cookie = f"{name}=" + "a" * (
+            monorepo_auth.MAX_SESSION_COOKIE_PAIR_BYTES - len(name) - 1
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["cookie"], cookie)
+            return _json_response(
+                200,
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "learner@example.test"},
+                },
+            )
+
+        with _mock_auth_client(handler):
+            result = await monorepo_auth.get_session(cookie)
+        self.assertEqual(result.state, SessionState.VALID)
 
     async def test_explicit_invalid_session_shapes_are_not_outages(self) -> None:
         cases = (
@@ -498,9 +790,39 @@ class SessionContractTests(unittest.IsolatedAsyncioTestCase):
         cases = (
             (503, {"code": "SERVICE_UNAVAILABLE"}, AuthFailureKind.UNAVAILABLE),
             (200, ["not", "an", "object"], AuthFailureKind.INVALID_RESPONSE),
+            (200, {"session": []}, AuthFailureKind.INVALID_RESPONSE),
+            (200, {"session": ""}, AuthFailureKind.INVALID_RESPONSE),
+            (200, {"session": False}, AuthFailureKind.INVALID_RESPONSE),
+            (200, {"session": {}}, AuthFailureKind.INVALID_RESPONSE),
+            (
+                200,
+                {"session": {"id": ""}, "user": {"id": "u", "email": "a@b.test"}},
+                AuthFailureKind.INVALID_RESPONSE,
+            ),
+            (
+                200,
+                {"session": {"id": 7}, "user": {"id": "u", "email": "a@b.test"}},
+                AuthFailureKind.INVALID_RESPONSE,
+            ),
             (
                 200,
                 {"session": {"id": "s"}, "user": {}},
+                AuthFailureKind.INVALID_RESPONSE,
+            ),
+            (
+                200,
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "", "email": "a@b.test"},
+                },
+                AuthFailureKind.INVALID_RESPONSE,
+            ),
+            (
+                200,
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": 7, "email": "a@b.test"},
+                },
                 AuthFailureKind.INVALID_RESPONSE,
             ),
         )
@@ -516,6 +838,32 @@ class SessionContractTests(unittest.IsolatedAsyncioTestCase):
                             "better-auth.session_token=opaque"
                         )
                 self.assertEqual(raised.exception.kind, expected)
+
+    async def test_hostile_inbound_cookie_is_rejected_before_upstream(self) -> None:
+        for cookie in (
+            "attacker.session_token=opaque",
+            "better-auth.session_token=one; other=two",
+            "better-auth.session_token=has space",
+            "better-auth.session_token=has,comma",
+            "better-auth.session_token=\u00e9",
+            "better-auth.session_token=",
+            "better-auth.session_token=" + "a" * 4096,
+        ):
+            with self.subTest(cookie=cookie[:80]):
+                factory = unittest.mock.MagicMock()
+                with patch.object(monorepo_auth, "_new_auth_client", factory):
+                    with self.assertRaises(MonorepoAuthError) as raised:
+                        await monorepo_auth.get_session(cookie)
+                self.assertEqual(raised.exception.kind, AuthFailureKind.INVALID_SESSION)
+                factory.assert_not_called()
+
+                with patch.object(monorepo_auth, "_new_auth_client", factory):
+                    with self.assertRaises(MonorepoAuthError) as logout_raised:
+                        await monorepo_auth.sign_out(cookie)
+                self.assertEqual(
+                    logout_raised.exception.kind, AuthFailureKind.INVALID_SESSION
+                )
+                factory.assert_not_called()
 
     async def test_session_transport_failure_is_unavailable(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -540,7 +888,10 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
             if len(requests) == 1:
                 return _json_response(
                     200,
-                    {"session": {"id": "s"}, "user": {"email": "user@example.test"}},
+                    {
+                        "session": {"id": "s"},
+                        "user": {"id": "u", "email": "user@example.test"},
+                    },
                 )
             if len(requests) == 2:
                 self.assertEqual(request.url.path, "/api/auth/sign-out")
@@ -586,7 +937,10 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
                 return _json_response(200, {"success": True})
             return _json_response(
                 200,
-                {"session": {"id": "s"}, "user": {"email": "user@example.test"}},
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "user@example.test"},
+                },
             )
 
         with _mock_auth_client(handler):
@@ -594,6 +948,36 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
                 await monorepo_auth.sign_out("better-auth.session_token=current")
         self.assertEqual(raised.exception.kind, AuthFailureKind.LOGOUT_UNCONFIRMED)
         self.assertEqual(calls, 3)
+
+    async def test_malformed_falsey_former_session_never_confirms_logout(self) -> None:
+        for malformed_session in ([], "", False):
+            with self.subTest(session=malformed_session):
+                calls = 0
+
+                def handler(request: httpx.Request) -> httpx.Response:
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return _json_response(
+                            200,
+                            {
+                                "session": {"id": "s"},
+                                "user": {"id": "u", "email": "user@example.test"},
+                            },
+                        )
+                    if request.url.path == "/api/auth/sign-out":
+                        return _json_response(200, {"success": True})
+                    return _json_response(200, {"session": malformed_session})
+
+                with _mock_auth_client(handler):
+                    with self.assertRaises(MonorepoAuthError) as raised:
+                        await monorepo_auth.sign_out(
+                            "better-auth.session_token=current"
+                        )
+                self.assertEqual(
+                    raised.exception.kind, AuthFailureKind.INVALID_RESPONSE
+                )
+                self.assertEqual(calls, 3)
 
     async def test_malformed_or_rejected_sign_out_is_never_success(self) -> None:
         cases = (
@@ -611,7 +995,7 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
                         200,
                         {
                             "session": {"id": "s"},
-                            "user": {"email": "user@example.test"},
+                            "user": {"id": "u", "email": "user@example.test"},
                         },
                     )
 
@@ -630,7 +1014,10 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
                 raise httpx.ConnectError("sign-out unavailable", request=request)
             return _json_response(
                 200,
-                {"session": {"id": "s"}, "user": {"email": "user@example.test"}},
+                {
+                    "session": {"id": "s"},
+                    "user": {"id": "u", "email": "user@example.test"},
+                },
             )
 
         with _mock_auth_client(handler):
@@ -640,6 +1027,39 @@ class LogoutContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthRouteContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streaming_form_reader_accepts_exact_cumulative_boundary(
+        self,
+    ) -> None:
+        chunks = (b"a" * 1024, b"b" * 1024)
+        body = await auth_routes._read_limited_form_body(
+            _streaming_form_request(chunks, content_length=b"2048")
+        )
+        self.assertEqual(body, b"".join(chunks))
+        self.assertEqual(len(body), auth_routes.MAX_AUTH_FORM_BYTES)
+
+    async def test_streaming_cumulative_overflow_is_local_422(self) -> None:
+        request = _streaming_form_request(
+            (b"a" * 1024, b"b" * 1024, b"x"),
+            # Deliberately understated: the stream, not this hint, is binding.
+            content_length=b"2048",
+        )
+        upstream = AsyncMock()
+        join = AsyncMock()
+        with (
+            patch.object(auth_routes, "sign_in", upstream),
+            patch.object(
+                auth_routes.crud_user, "get_or_create_from_verified_email", join
+            ),
+        ):
+            with self.assertRaises(AuthAPIError) as raised:
+                await auth_routes.token(request, db=object())
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(raised.exception.code, AuthErrorCode.INVALID_REQUEST)
+        self.assertEqual(raised.exception.message, "Formulário muito grande.")
+        upstream.assert_not_awaited()
+        join.assert_not_awaited()
+
     async def test_invalid_cpf_is_local_422_and_never_calls_upstream_or_db(
         self,
     ) -> None:
@@ -649,7 +1069,9 @@ class AuthRouteContractTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(auth_routes, "sign_in", upstream),
-            patch.object(auth_routes.crud_user, "get_or_create_by_email", join),
+            patch.object(
+                auth_routes.crud_user, "get_or_create_from_verified_email", join
+            ),
         ):
             with self.assertRaises(AuthAPIError) as raised:
                 await auth_routes.token(request, db=object())
@@ -670,7 +1092,9 @@ class AuthRouteContractTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(auth_routes, "sign_in", upstream),
-            patch.object(auth_routes.crud_user, "get_or_create_by_email", join),
+            patch.object(
+                auth_routes.crud_user, "get_or_create_from_verified_email", join
+            ),
         ):
             response = await auth_routes.token(request, db=object())
 
@@ -744,7 +1168,9 @@ class AuthRouteContractTests(unittest.IsolatedAsyncioTestCase):
                 join = AsyncMock()
                 with (
                     patch.object(auth_routes, "sign_in", upstream),
-                    patch.object(auth_routes.crud_user, "get_or_create_by_email", join),
+                    patch.object(
+                        auth_routes.crud_user, "get_or_create_from_verified_email", join
+                    ),
                 ):
                     with self.assertRaises(AuthAPIError) as raised:
                         await auth_routes.token(request, db=object())

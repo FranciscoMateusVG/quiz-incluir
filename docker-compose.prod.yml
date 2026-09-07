@@ -10,9 +10,9 @@
 # Required Dokploy-managed env vars (set in the Dokploy environment panel):
 #   QUIZ_DB_PASSWORD   — Postgres password for the dedicated quiz DB
 #   SECRET_KEY         — session-signing key for the SQLAdmin panel (generate: openssl rand -hex 32)
-#   MONOREPO_AUTH_URL  — base URL of the Programa Incluir monorepo's auth API (hono-app).
-#                        Must be a private HTTP service origin reachable on a shared network
-#                        (for example http://hono-app:3003). Public fallbacks are rejected.
+#   MONOREPO_AUTH_URL  — Programa Incluir auth origin. Production accepts exactly
+#                        http://hono-app:3003; the only other allowed value is the
+#                        approved host-only test fixture http://127.0.0.1:4503.
 #   TRUSTED_PROXY_CIDRS — comma-separated exact /32 or /128 public Traefik peer(s).
 #                        Required for per-client sign-in buckets in deployed environments.
 #                        Empty trusts no proxy and safely attributes requests to the socket

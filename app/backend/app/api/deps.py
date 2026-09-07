@@ -52,7 +52,7 @@ async def get_current_user(
     email = await _verified_email(token)
     if email is None:
         raise _auth_required()
-    return await crud_user.get_or_create_by_email(db, email)
+    return await crud_user.get_or_create_from_verified_email(db, email)
 
 
 async def get_current_admin_user(
@@ -80,4 +80,4 @@ async def get_optional_current_user(
     email = await _verified_email(token)
     if email is None:
         return None
-    return await crud_user.get_or_create_by_email(db, email)
+    return await crud_user.get_or_create_from_verified_email(db, email)

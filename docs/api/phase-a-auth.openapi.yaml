@@ -126,6 +126,40 @@ paths:
           $ref: "#/components/responses/InvalidAuthResponse"
         "503":
           $ref: "#/components/responses/AuthUnavailable"
+    patch:
+      operationId: updateCurrentUserProfile
+      summary: Update non-identity fields on the current Quiz-local profile
+      description: >-
+        The BetterAuth email is the immutable local identity join key and is not
+        accepted by this endpoint. Unknown fields, including email, return 422
+        before any database write.
+      security:
+        - bearerAuth: []
+      x-rate-limit-tier: no-quiz-side-limit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                level: {type: string, enum: [B1, B2, B3, B4]}
+      responses:
+        "200":
+          description: Updated Quiz-local profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "422":
+          description: Email/unknown field or invalid level was rejected locally
+        "502":
+          $ref: "#/components/responses/InvalidAuthResponse"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
 components:
   securitySchemes:
     bearerAuth:
@@ -140,6 +174,7 @@ components:
       properties:
         access_token:
           type: string
+          maxLength: 4096
           description: Opaque BetterAuth session cookie name=value pair
         token_type:
           type: string
@@ -167,6 +202,7 @@ components:
         retry_after_seconds:
           type: integer
           minimum: 1
+          maximum: 10
           description: Present only for a validated upstream rate-limit response
     User:
       type: object
@@ -211,7 +247,7 @@ components:
     RateLimited:
       description: Validated BetterAuth sign-in rate limit
       headers:
-        Retry-After: {schema: {type: integer, minimum: 1}, example: 7}
+        Retry-After: {schema: {type: integer, minimum: 1, maximum: 10}, example: 7}
       content:
         application/json:
           schema: {$ref: "#/components/schemas/AuthError"}
