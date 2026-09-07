@@ -54,13 +54,15 @@ def install_session_revalidation(
     """Neutralize retained protected trees, then revalidate after reconnect."""
 
     def on_disconnect(e) -> None:
+        # Every detached client loses ownership of work it started, including
+        # a login that has not installed identity yet.
+        state.supersede_async_work()
         if state.token is None or state.current_user is None:
             return
         # A disconnect ends the authority of every request started by the old
         # client attachment without treating reconnect as logout. Only the
         # forced /users/me check in on_connect can validate the retained token
         # for the new attachment.
-        state.supersede_async_work()
         auth.invalidate_validation()
         # Flet 0.86.5 discards observable scheduling after detaching the
         # connection, while reconnect registration serializes the retained

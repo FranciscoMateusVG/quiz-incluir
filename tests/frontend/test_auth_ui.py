@@ -1474,6 +1474,66 @@ def test_disconnect_neutralizes_validation_and_forces_server_tree_update() -> No
     assert updates == ["updated"]
 
 
+def test_disconnect_revokes_in_flight_anonymous_login_ownership() -> None:
+    async def scenario() -> tuple[bool, AppState, list[str]]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class Api:
+            async def login(self, cpf: str, password: str):
+                return SimpleNamespace(access_token="late-token")
+
+            async def me(self, token: str):
+                started.set()
+                await release.wait()
+                return SimpleNamespace(email="late@incluir.test", role=UserRole.STUDENT)
+
+        state = AppState()
+        auth = AuthController(state, Api())  # type: ignore[arg-type]
+        updates: list[str] = []
+        page = SimpleNamespace(route="/", update=lambda: updates.append("updated"))
+        install_session_revalidation(page, state, auth)
+        login = asyncio.create_task(auth.login("09149991680", "password"))
+        await started.wait()
+        page.on_disconnect(None)
+        release.set()
+        return await login, state, updates
+
+    committed, state, updates = asyncio.run(scenario())
+    assert committed is False
+    assert state.auth_session_generation == 1
+    assert state.token is None
+    assert state.current_user is None
+    assert updates == []
+
+
+@pytest.mark.parametrize(
+    ("token", "user"),
+    [
+        ("partial-token", None),
+        (None, SimpleNamespace(role=UserRole.STUDENT)),
+    ],
+)
+def test_disconnect_advances_work_epoch_for_partial_auth_state(
+    token: str | None, user: object | None
+) -> None:
+    state = AppState(token=token)
+    state.current_user = user  # type: ignore[assignment]
+    auth = SimpleNamespace(
+        invalidate_validation=lambda: state.invalidate_auth_validation()
+    )
+    updates: list[str] = []
+    page = SimpleNamespace(route="/", update=lambda: updates.append("updated"))
+
+    install_session_revalidation(page, state, auth)  # type: ignore[arg-type]
+    page.on_disconnect(None)
+
+    assert state.auth_session_generation == 1
+    assert state.token == token
+    assert state.current_user is user
+    assert updates == []
+
+
 def test_reconnect_forces_authoritative_check_only_for_protected_route() -> None:
     state = _authenticated_state()
     calls: list[tuple[str, bool]] = []
