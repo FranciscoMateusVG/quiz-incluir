@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import BigInteger, CheckConstraint, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 
@@ -330,6 +331,24 @@ class PostgresBudgetRepositoryTests(unittest.IsolatedAsyncioTestCase):
             assert result is not None
             return result
 
+    async def _reservation_count(self) -> int:
+        async with self.session_factory() as session:
+            result = await session.exec(select(AIBudgetReservation))
+            return len(result.all())
+
+    async def _seed_month(self, *, limit: int) -> None:
+        async with self.session_factory.begin() as session:
+            session.add(
+                AIMonthlyBudget(
+                    month_start=date(2026, 9, 1),
+                    limit_microusd=limit,
+                    committed_microusd=0,
+                    reserved_microusd=0,
+                    created_at=self.now,
+                    updated_at=self.now,
+                )
+            )
+
     async def test_exact_monthly_ceiling_succeeds_and_one_over_is_denied(self) -> None:
         repository = self.repository(limit=100)
         reservation = await repository.reserve("lookup", 100)
@@ -342,6 +361,42 @@ class PostgresBudgetRepositoryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BudgetExceeded) as raised:
             await repository.reserve("lookup", 1)
         self.assertEqual(raised.exception.retry_after_seconds, 2_030_400)
+
+    async def test_existing_higher_limit_than_configuration_fails_closed(self) -> None:
+        await self._seed_month(limit=2_000)
+        repository = self.repository(limit=1_000)
+
+        with self.assertRaises(BudgetUnavailable):
+            await repository.reserve("lookup", 100)
+
+        month = await self._month(date(2026, 9, 1))
+        self.assertEqual(month.limit_microusd, 2_000)
+        self.assertEqual(month.reserved_microusd, 0)
+        self.assertEqual(await self._reservation_count(), 0)
+
+    async def test_existing_lower_limit_than_configuration_fails_closed(self) -> None:
+        await self._seed_month(limit=1_000)
+        repository = self.repository(limit=2_000)
+
+        with self.assertRaises(BudgetUnavailable):
+            await repository.reserve("lookup", 100)
+
+        month = await self._month(date(2026, 9, 1))
+        self.assertEqual(month.limit_microusd, 1_000)
+        self.assertEqual(month.reserved_microusd, 0)
+        self.assertEqual(await self._reservation_count(), 0)
+
+    async def test_existing_matching_limit_allows_reservation(self) -> None:
+        await self._seed_month(limit=1_000)
+        repository = self.repository(limit=1_000)
+
+        reservation = await repository.reserve("lookup", 100)
+
+        self.assertEqual(reservation.reserved_microusd, 100)
+        month = await self._month(date(2026, 9, 1))
+        self.assertEqual(month.limit_microusd, 1_000)
+        self.assertEqual(month.reserved_microusd, 100)
+        self.assertEqual(await self._reservation_count(), 1)
 
     async def test_commit_and_release_are_idempotent_state_transitions(self) -> None:
         repository = self.repository(limit=1_000)

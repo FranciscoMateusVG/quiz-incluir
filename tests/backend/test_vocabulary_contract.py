@@ -166,6 +166,32 @@ class _FakeGrants:
         return self.translations[(user_id, lookup_id)]
 
 
+class _NeverReturningDailyBudget(_FakeBudget):
+    async def consume_daily(self, user_id: UUID, operation: str) -> None:
+        self.daily_calls.append((user_id, operation))
+        await asyncio.Event().wait()
+
+
+class _UnavailableReservationBudget(_FakeBudget):
+    async def reserve(self, operation: str, amount: int) -> object:
+        self.reserve_calls.append((operation, amount))
+        raise vocabulary_core.BudgetUnavailable("configured limit mismatch")
+
+
+class _NeverReturningGrantResolve(_FakeGrants):
+    async def resolve(self, user_id: UUID, lookup_id: UUID) -> str:
+        self.resolve_calls.append((user_id, lookup_id))
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class _NeverReturningGrantCreate(_FakeGrants):
+    async def create(self, user_id: UUID, translation: str) -> UUID:
+        self.create_calls.append((user_id, translation))
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 class _FakeProvider:
     def __init__(self) -> None:
         self.lookup_calls: list[str] = []
@@ -183,6 +209,21 @@ class _FakeProvider:
     async def pronounce(self, translation: str) -> bytes:
         self.pronunciation_calls.append(translation)
         return b"ID3\x04\x00\x00fake-mp3"
+
+
+class _TranslationProvider(_FakeProvider):
+    def __init__(self, translation: str) -> None:
+        super().__init__()
+        self.translation = translation
+
+    async def lookup(self, text: str):
+        self.lookup_calls.append(text)
+        return vocabulary_provider.ProviderLookupResult(
+            translation=self.translation,
+            definition="A safe definition.",
+            input_tokens=8,
+            output_tokens=12,
+        )
 
 
 class _BlockingProvider(_FakeProvider):
@@ -635,6 +676,23 @@ class VocabularyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget.reserve_calls, [])
         self.assertEqual(budget.commit_calls, [])
 
+    async def test_budget_mismatch_fails_before_provider_or_grant(self) -> None:
+        provider = _FakeProvider()
+        budget = _UnavailableReservationBudget()
+        grants = _FakeGrants()
+        service = self._service(provider=provider, budget=budget, grants=grants)
+
+        with self.assertRaises(vocabulary_core.VocabularyServiceError) as raised:
+            await service.lookup(uuid4(), "casa")
+
+        self.assertEqual(
+            raised.exception.code,
+            VocabularyErrorCode.PROVIDER_UNAVAILABLE,
+        )
+        self.assertEqual(len(budget.reserve_calls), 1)
+        self.assertEqual(provider.lookup_calls, [])
+        self.assertEqual(grants.create_calls, [])
+
     async def test_identical_cache_misses_share_one_paid_provider_flight(
         self,
     ) -> None:
@@ -734,6 +792,123 @@ class VocabularyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.pronunciation_calls, ["server-owned translation"])
         self.assertEqual(budget.daily_calls, [(user_id, "pronunciation")])
         self.assertEqual(budget.reserve_calls[0][0], "pronunciation")
+
+    async def test_lookup_never_mints_unpronounceable_translation_grant(self) -> None:
+        for translation in ("good  morning", "good\N{NO-BREAK SPACE}morning"):
+            with self.subTest(translation=translation):
+                provider = _TranslationProvider(translation)
+                budget = _FakeBudget()
+                grants = _FakeGrants()
+                cache = vocabulary_core.VocabularyCache()
+                service = self._service(
+                    provider=provider,
+                    budget=budget,
+                    grants=grants,
+                    cache=cache,
+                )
+
+                with self.assertRaises(
+                    vocabulary_core.VocabularyServiceError
+                ) as raised:
+                    await service.lookup(uuid4(), "bom dia")
+
+                self.assertEqual(
+                    raised.exception.code,
+                    VocabularyErrorCode.INVALID_PROVIDER_RESPONSE,
+                )
+                self.assertEqual(grants.create_calls, [])
+                self.assertIsNone(cache.get("bom dia"))
+                self.assertEqual(provider.lookup_calls, ["bom dia"])
+
+    async def test_complete_lookup_journey_times_out_before_provider(self) -> None:
+        provider = _FakeProvider()
+        budget = _NeverReturningDailyBudget()
+        grants = _FakeGrants()
+        service = self._service(provider=provider, budget=budget, grants=grants)
+
+        with (
+            patch.object(
+                vocabulary_core,
+                "VOCABULARY_JOURNEY_DEADLINE_SECONDS",
+                0.01,
+            ),
+            self.assertRaises(vocabulary_core.VocabularyServiceError) as raised,
+        ):
+            await service.lookup(uuid4(), "casa")
+
+        self.assertEqual(
+            raised.exception.code,
+            VocabularyErrorCode.PROVIDER_UNAVAILABLE,
+        )
+        self.assertEqual(provider.lookup_calls, [])
+        self.assertEqual(budget.reserve_calls, [])
+        self.assertEqual(grants.create_calls, [])
+
+    async def test_complete_pronunciation_journey_times_out_before_provider(
+        self,
+    ) -> None:
+        provider = _FakeProvider()
+        budget = _FakeBudget()
+        grants = _NeverReturningGrantResolve()
+        service = self._service(provider=provider, budget=budget, grants=grants)
+        user_id = uuid4()
+        lookup_id = uuid4()
+
+        with (
+            patch.object(
+                vocabulary_core,
+                "VOCABULARY_JOURNEY_DEADLINE_SECONDS",
+                0.01,
+            ),
+            self.assertRaises(vocabulary_core.VocabularyServiceError) as raised,
+        ):
+            await service.pronounce(user_id, lookup_id)
+
+        self.assertEqual(
+            raised.exception.code,
+            VocabularyErrorCode.PROVIDER_UNAVAILABLE,
+        )
+        self.assertEqual(grants.resolve_calls, [(user_id, lookup_id)])
+        self.assertEqual(provider.pronunciation_calls, [])
+        self.assertEqual(budget.daily_calls, [])
+        self.assertEqual(budget.reserve_calls, [])
+
+    async def test_cache_hit_grant_creation_is_inside_complete_deadline(self) -> None:
+        provider = _FakeProvider()
+        budget = _FakeBudget()
+        grants = _NeverReturningGrantCreate()
+        cache = vocabulary_core.VocabularyCache()
+        cache.put(
+            "casa",
+            vocabulary_core.CachedVocabularyResult(
+                translation="house",
+                definition="A building where people live.",
+            ),
+        )
+        service = self._service(
+            provider=provider,
+            budget=budget,
+            grants=grants,
+            cache=cache,
+        )
+
+        with (
+            patch.object(
+                vocabulary_core,
+                "VOCABULARY_JOURNEY_DEADLINE_SECONDS",
+                0.01,
+            ),
+            self.assertRaises(vocabulary_core.VocabularyServiceError) as raised,
+        ):
+            await service.lookup(uuid4(), "casa")
+
+        self.assertEqual(
+            raised.exception.code,
+            VocabularyErrorCode.PROVIDER_UNAVAILABLE,
+        )
+        self.assertEqual(provider.lookup_calls, [])
+        self.assertEqual(budget.reserve_calls, [])
+        self.assertEqual(len(grants.create_calls), 1)
 
 
 class ProviderBoundaryTests(unittest.IsolatedAsyncioTestCase):

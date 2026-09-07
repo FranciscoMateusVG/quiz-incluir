@@ -142,6 +142,7 @@ class AIBudgetRepository:
                         update(AIMonthlyBudget)
                         .where(
                             AIMonthlyBudget.month_start == month_start,
+                            AIMonthlyBudget.limit_microusd == self._limit,
                             AIMonthlyBudget.committed_microusd
                             + AIMonthlyBudget.reserved_microusd
                             + amount_microusd
@@ -155,6 +156,15 @@ class AIBudgetRepository:
                         .returning(AIMonthlyBudget.month_start)
                     )
                     if changed.scalar_one_or_none() is None:
+                        stored_limit = await session.exec(
+                            select(AIMonthlyBudget.limit_microusd)
+                            .where(AIMonthlyBudget.month_start == month_start)
+                            .with_for_update()
+                        )
+                        if stored_limit.one_or_none() != self._limit:
+                            raise BudgetUnavailable(
+                                "configured monthly budget does not match stored limit"
+                            )
                         raise BudgetExceeded(
                             retry_after_seconds=_seconds_to_next_month(now)
                         )

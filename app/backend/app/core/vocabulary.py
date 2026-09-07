@@ -37,7 +37,11 @@ from app.core.vocabulary_provider import (
     VocabularyProvider,
 )
 from app.models import VocabularyLookupGrant
-from quiz_shared.schemas import VocabularyErrorCode, VocabularyLookupResponse
+from quiz_shared.schemas import (
+    VocabularyErrorCode,
+    VocabularyLookupResponse,
+    validate_canonical_vocabulary_output,
+)
 
 
 LOOKUP_GRANT_TTL_SECONDS = 900
@@ -66,16 +70,12 @@ def normalize_lookup_text(value: str) -> str:
 
 
 def validate_pronunciation_text(value: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= 120
-        or _has_unsafe_unicode(value)
-        or not unicodedata.is_normalized("NFC", value)
-        or value != value.strip()
-        or " ".join(value.split()) != value
-    ):
+    if not isinstance(value, str) or not 1 <= len(value) <= 120:
         raise ValueError("invalid canonical pronunciation text")
-    return value
+    try:
+        return validate_canonical_vocabulary_output(value)
+    except ValueError as exc:
+        raise ValueError("invalid canonical pronunciation text") from exc
 
 
 def _cache_key(value: str) -> str:
@@ -383,29 +383,35 @@ class VocabularyService:
         return await asyncio.shield(task)
 
     async def lookup(self, user_id: UUID, text: str) -> VocabularyLookupResponse:
-        self._require_enabled()
-        self._consume_minute(user_id, "lookup")
-        await self._consume_daily(user_id, "lookup")
-        cached = self._cache.get(text)
-        if cached is None:
-            cached = await self._coalesced_lookup(text)
-        lookup_id = await self._grants.create(user_id, cached.translation)
-        return VocabularyLookupResponse(
-            lookup_id=lookup_id,
-            source_text=text,
-            translation=cached.translation,
-            definition=cached.definition,
-        )
+        try:
+            async with asyncio.timeout(VOCABULARY_JOURNEY_DEADLINE_SECONDS):
+                self._require_enabled()
+                self._consume_minute(user_id, "lookup")
+                await self._consume_daily(user_id, "lookup")
+                cached = self._cache.get(text)
+                if cached is None:
+                    cached = await self._coalesced_lookup(text)
+                lookup_id = await self._grants.create(user_id, cached.translation)
+                return VocabularyLookupResponse(
+                    lookup_id=lookup_id,
+                    source_text=text,
+                    translation=cached.translation,
+                    definition=cached.definition,
+                )
+        except TimeoutError as exc:
+            raise VocabularyServiceError(
+                VocabularyErrorCode.PROVIDER_UNAVAILABLE
+            ) from exc
 
     async def pronounce(self, user_id: UUID, lookup_id: UUID) -> bytes:
-        translation = await self._grants.resolve(user_id, lookup_id)
-        provider = self._require_enabled()
-        self._consume_minute(user_id, "pronunciation")
-        await self._consume_daily(user_id, "pronunciation")
         reservation = None
         provider_started = False
         try:
             async with asyncio.timeout(VOCABULARY_JOURNEY_DEADLINE_SECONDS):
+                translation = await self._grants.resolve(user_id, lookup_id)
+                provider = self._require_enabled()
+                self._consume_minute(user_id, "pronunciation")
+                await self._consume_daily(user_id, "pronunciation")
                 cost = tts_cost_microusd(len(translation))
                 reservation = await self._budget.reserve("pronunciation", cost)
                 async with self._provider_slots:

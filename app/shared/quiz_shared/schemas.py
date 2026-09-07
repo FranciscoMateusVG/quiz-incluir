@@ -67,11 +67,19 @@ CanonicalIdentityEmail = Annotated[
 ]
 
 
-def _validate_canonical_vocabulary_value(value: str) -> str:
-    """Reject text that is unsafe or non-canonical at an API boundary."""
+def validate_canonical_vocabulary_output(value: str) -> str:
+    """Validate provider output before it can cross a vocabulary API boundary.
+
+    Output is already canonical: this validator deliberately rejects rather
+    than normalizes it.  In particular, the only permitted whitespace is one
+    ASCII space between non-whitespace runs, matching the pronunciation input
+    contract.
+    """
 
     if not value or value != value.strip() or not is_normalized("NFC", value):
         raise ValueError("value must be nonempty, unpadded Unicode NFC")
+    if " ".join(value.split()) != value:
+        raise ValueError("value must use single ASCII spaces")
     if any(
         ord(character) <= 0x1F
         or 0x7F <= ord(character) <= 0x9F
@@ -86,12 +94,12 @@ def _validate_canonical_vocabulary_value(value: str) -> str:
 CanonicalVocabularyText120 = Annotated[
     StrictStr,
     StringConstraints(min_length=1, max_length=120),
-    AfterValidator(_validate_canonical_vocabulary_value),
+    AfterValidator(validate_canonical_vocabulary_output),
 ]
 CanonicalVocabularyDefinition = Annotated[
     StrictStr,
     StringConstraints(min_length=1, max_length=240),
-    AfterValidator(_validate_canonical_vocabulary_value),
+    AfterValidator(validate_canonical_vocabulary_output),
 ]
 
 

@@ -1,8 +1,9 @@
 from functools import lru_cache
 from ipaddress import IPv4Network, IPv6Network
+import os
 from typing import List
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.client_ip import parse_trusted_proxy_cidrs
@@ -92,6 +93,20 @@ class Settings(BaseSettings):
         le=5_000_000,
         description="Hard UTC-month provider budget in millionths of one US dollar.",
     )
+
+    @model_validator(mode="after")
+    def reject_ambient_openai_controls(self) -> "Settings":
+        forbidden = sorted(
+            name
+            for name in os.environ
+            if name.startswith("OPENAI_") and name != "OPENAI_API_KEY"
+        )
+        if forbidden:
+            raise ValueError(
+                "unsupported ambient OpenAI configuration is present: "
+                + ", ".join(forbidden)
+            )
+        return self
 
     SECRET_KEY: str = Field(
         default="your-secret-key-change-in-production",
