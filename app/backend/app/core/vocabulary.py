@@ -313,12 +313,17 @@ class VocabularyService:
             ) from exc
         return CachedVocabularyResult(response.translation, response.definition)
 
-    async def _lookup_provider(self, source_text: str) -> CachedVocabularyResult:
+    async def _lookup_provider(
+        self,
+        source_text: str,
+        *,
+        deadline: float,
+    ) -> CachedVocabularyResult:
         provider = self._require_enabled()
         reservation = None
         provider_started = False
         try:
-            async with asyncio.timeout(VOCABULARY_JOURNEY_DEADLINE_SECONDS):
+            async with asyncio.timeout_at(deadline):
                 reservation = await self._budget.reserve(
                     "lookup", LOOKUP_RESERVATION_MICROUSD
                 )
@@ -368,12 +373,19 @@ class VocabularyService:
             # cancelled. Awaiters still observe the same stored exception.
             completed.exception()
 
-    async def _coalesced_lookup(self, source_text: str) -> CachedVocabularyResult:
+    async def _coalesced_lookup(
+        self,
+        source_text: str,
+        *,
+        deadline: float,
+    ) -> CachedVocabularyResult:
         key = _cache_key(source_text)
         async with self._flight_guard:
             task = self._flights.get(key)
             if task is None:
-                task = asyncio.create_task(self._lookup_provider(source_text))
+                task = asyncio.create_task(
+                    self._lookup_provider(source_text, deadline=deadline)
+                )
                 self._flights[key] = task
                 task.add_done_callback(
                     lambda completed, flight_key=key: self._finish_flight(
@@ -383,14 +395,17 @@ class VocabularyService:
         return await asyncio.shield(task)
 
     async def lookup(self, user_id: UUID, text: str) -> VocabularyLookupResponse:
+        deadline = (
+            asyncio.get_running_loop().time() + VOCABULARY_JOURNEY_DEADLINE_SECONDS
+        )
         try:
-            async with asyncio.timeout(VOCABULARY_JOURNEY_DEADLINE_SECONDS):
+            async with asyncio.timeout_at(deadline):
                 self._require_enabled()
                 self._consume_minute(user_id, "lookup")
                 await self._consume_daily(user_id, "lookup")
                 cached = self._cache.get(text)
                 if cached is None:
-                    cached = await self._coalesced_lookup(text)
+                    cached = await self._coalesced_lookup(text, deadline=deadline)
                 lookup_id = await self._grants.create(user_id, cached.translation)
                 return VocabularyLookupResponse(
                     lookup_id=lookup_id,

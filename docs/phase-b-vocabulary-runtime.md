@@ -17,6 +17,11 @@ The model, voice, provider origin, paths, timeouts, token caps, and response
 caps are code constants, not environment inputs. The provider client disables
 ambient HTTP proxies, redirects, and SDK retries.
 
+Lookup calculates one absolute 12-second deadline before durable daily work.
+The same deadline is passed to the leader cache-miss provider task, so
+coalescing and cancellation shielding cannot extend paid work or cache writes
+beyond the leader's remaining budget.
+
 Every reservation compares the configured monthly limit with the persisted
 current-month row. A mismatch fails closed before a provider call; changing the
 limit therefore requires an explicit, reviewed database reconciliation rather

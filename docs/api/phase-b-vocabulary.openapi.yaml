@@ -56,6 +56,10 @@ paths:
         policy: lru-512-successful-lookups-for-24-hours
         key: nfc-casefold-collapsed-whitespace
         missCoalescing: one-in-flight-provider-call-per-identical-key-per-process
+        missDeadline: >-
+          The leader request's absolute journey deadline is propagated into
+          the shared provider flight; shielding or followers cannot extend
+          paid work beyond that deadline.
         accounting: minute-and-daily-limits-apply-to-cache-hits
         storedFields: [translation, definition]
         excludedFields: [source_text, lookup_id, user_id, ownership]
