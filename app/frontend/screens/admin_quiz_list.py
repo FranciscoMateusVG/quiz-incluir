@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import flet as ft
-from flet import component, use_effect, use_state
+from flet import component, use_effect, use_ref, use_state
 
 import theme
 from controllers.admin_controller import AdminController
@@ -19,20 +19,45 @@ def AdminQuizListScreen(
     quizzes, set_quizzes = use_state([])
     error, set_error = use_state("")
     loading, set_loading = use_state(True)
+    data_owner_ref = use_ref((state.token, state.auth_session_generation))
+
+    def session_snapshot() -> tuple[str | None, int]:
+        return state.token, state.auth_session_generation
+
+    def session_is_current(owner: tuple[str | None, int]) -> bool:
+        return owner == session_snapshot()
 
     async def load():
+        owner = session_snapshot()
         try:
-            set_quizzes(await controller.list_quizzes())
+            loaded_quizzes = await controller.list_quizzes()
+            if loaded_quizzes is None or not session_is_current(owner):
+                return
+            data_owner_ref.current = owner
+            set_quizzes(loaded_quizzes)
             set_error("")
         except Exception as ex:
+            if not session_is_current(owner):
+                return
+            data_owner_ref.current = owner
             set_error(f"Could not load quizzes: {ex}")
         finally:
-            set_loading(False)
+            if session_is_current(owner):
+                set_loading(False)
 
-    use_effect(load, [])
+    use_effect(load, [state.token, state.auth_session_generation])
+
+    local_data_is_current = session_is_current(data_owner_ref.current)
+    visible_quizzes = quizzes if local_data_is_current else []
+    visible_error = error if local_data_is_current else ""
+    visible_loading = loading if local_data_is_current else True
 
     def _row(quiz):
+        owner = data_owner_ref.current
+
         def on_click(e, q=quiz):
+            if not session_is_current(owner):
+                return
             ft.context.page.navigate(f"/admin/grades/{q.id}")
 
         return ft.Button(
@@ -72,7 +97,7 @@ def AdminQuizListScreen(
             ),
         )
 
-    if loading:
+    if visible_loading:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -82,20 +107,24 @@ def AdminQuizListScreen(
                 spacing=16,
             ),
         )
-    elif error:
+    elif visible_error:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 [
                     ft.Icon(ft.Icons.ERROR_OUTLINE, color=theme.ERROR, size=50),
-                    ft.Text(error, color=theme.ERROR, text_align=ft.TextAlign.CENTER),
+                    ft.Text(
+                        visible_error,
+                        color=theme.ERROR,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=16,
             ),
         )
-    elif not quizzes:
+    elif not visible_quizzes:
         body = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -120,7 +149,7 @@ def AdminQuizListScreen(
                         color=theme.MUTED,
                     ),
                     ft.Column(
-                        [_row(q) for q in quizzes],
+                        [_row(q) for q in visible_quizzes],
                         spacing=12,
                     ),
                 ],
