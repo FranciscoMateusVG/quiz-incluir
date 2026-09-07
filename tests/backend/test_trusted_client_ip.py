@@ -11,6 +11,7 @@ import asyncio
 import unittest
 from collections.abc import Iterable
 from ipaddress import ip_network
+from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
@@ -110,8 +111,12 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(configured.trusted_proxy_networks, ())
 
-    def test_settings_accepts_only_the_two_known_auth_origins(self) -> None:
-        for origin in ("http://hono-app:3003", "http://127.0.0.1:4503"):
+    def test_settings_accepts_only_the_known_auth_origins(self) -> None:
+        for origin in (
+            "http://hono-app:3003",
+            "http://quiz-staging-hono:3003",
+            "http://127.0.0.1:4503",
+        ):
             with self.subTest(origin=origin):
                 configured = Settings(
                     _env_file=None,
@@ -126,6 +131,9 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
             "http://hono-app",
             "http://hono-app:4503",
             "http://hono-app:3003/",
+            "http://quiz-staging-hono",
+            "http://quiz-staging-hono:4503",
+            "http://quiz-staging-hono:3003/",
             "http://127.0.0.1:3003",
             "http://127.0.0.2:4503",
             "http://10.24.0.7:3003",
@@ -146,6 +154,32 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
                     MONOREPO_AUTH_URL=origin,
                     TRUSTED_PROXY_CIDRS="",
                 )
+
+    def test_staging_compose_uses_only_the_unique_auth_service_name(self) -> None:
+        compose = (
+            Path(__file__).resolve().parents[2] / "docker-compose.staging.yml"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            compose.count(
+                "MONOREPO_AUTH_URL: http://quiz-staging-hono:3003"
+            ),
+            1,
+        )
+        self.assertEqual(
+            compose.count("BETTER_AUTH_URL: http://quiz-staging-hono:3003"),
+            1,
+        )
+        self.assertNotIn("MONOREPO_AUTH_URL: http://hono-app:3003", compose)
+        self.assertNotIn("aliases: [hono-app]", compose)
+
+        backend = compose.split("  quiz-incluir-backend-staging:\n", 1)[1].split(
+            "\n  quiz-incluir-db-staging:", 1
+        )[0]
+        hono = compose.split("  quiz-staging-hono:\n", 1)[1].split(
+            "\n  quiz-staging-hono-db:", 1
+        )[0]
+        self.assertIn("networks: [quiz-staging-net]", backend)
+        self.assertIn("networks: [quiz-staging-net]", hono)
 
 
 class ResolveClientIpTests(unittest.TestCase):

@@ -10,6 +10,7 @@ from app.core.client_ip import parse_trusted_proxy_cidrs
 
 _ALLOWED_MONOREPO_AUTH_URLS = {
     "http://hono-app:3003",
+    "http://quiz-staging-hono:3003",
     "http://127.0.0.1:4503",
 }
 

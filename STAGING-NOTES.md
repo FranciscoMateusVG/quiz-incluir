@@ -66,8 +66,11 @@ over from production.
 ## Verification that must NOT be skipped
 
 - **Prove network membership from the SOURCE side** before trusting any
-  in-container `hono-app:3003/health` result. A health check run from a *peer*
-  container proves that peer's connectivity, not the backend's.
+  in-container `quiz-staging-hono:3003/health` result. From the running Quiz
+  backend, the name must resolve to the isolated Hono container on
+  `quiz-staging-net`, never the production `hono-app` address on Dokploy's
+  injected shared network. A health check run from a *peer* container proves
+  that peer's connectivity, not the backend's.
 - **Do not use an HTTP 200 as liveness.** Verified in the pinned candidate's
   `app/backend/main.py`: the app is constructed with `openapi_url=None`, and
   `/docs`, `/redoc`, `/openapi.json` are explicitly filtered out — so on THIS

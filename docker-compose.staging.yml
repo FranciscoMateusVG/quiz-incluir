@@ -32,11 +32,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://quiz:${QUIZ_DB_PASSWORD:?set in the Dokploy env panel}@quiz-incluir-db-staging:5432/quiz
       # Server-side relay to the ISOLATED Hono on the internal network.
       # Not a public host: quiz never makes a browser-side auth call.
-      # Allowlisted host, reached via the hono-app alias that exists ONLY on
-      # quiz-staging-net. The alias is deliberately NOT published on any shared
-      # network — prod already claims hono-app on dokploy-network, and a second
-      # claimant there would be ambiguous and dangerous.
-      MONOREPO_AUTH_URL: http://hono-app:3003
+      # Exact staging-only service name on quiz-staging-net. Do not use the
+      # production `hono-app` alias here: Dokploy injects dokploy-network into
+      # this backend for Traefik, where that alias resolves to production.
+      MONOREPO_AUTH_URL: http://quiz-staging-hono:3003
       SECRET_KEY: ${SECRET_KEY:?set in the Dokploy env panel}
       ADMIN_USERNAME: ${ADMIN_USERNAME:?set in the Dokploy env panel}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in the Dokploy env panel}
@@ -96,7 +95,7 @@ services:
       REDIS_URL: redis://quiz-staging-hono-redis:6379
       # Internal origin: quiz calls this server-side, so the auth URL is the
       # in-network address. No public auth host is required by the flow.
-      BETTER_AUTH_URL: http://hono-app:3003
+      BETTER_AUTH_URL: http://quiz-staging-hono:3003
       BETTER_AUTH_SECRET: ${STAGING_BETTER_AUTH_SECRET:?set in the Dokploy env panel}
       # No browser hits Hono directly in this topology, so no CORS origin is
       # required. If a browser-side auth call is ever introduced, this and the
@@ -117,10 +116,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 40
-    networks:
-      quiz-staging-net:
-        # The allowlisted name, scoped to THIS network only.
-        aliases: [hono-app]
+    networks: [quiz-staging-net]
 
   quiz-staging-hono-db:
     image: postgres:16-alpine
