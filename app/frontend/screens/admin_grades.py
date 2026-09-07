@@ -177,10 +177,12 @@ def AdminGradesScreen(
     # Flet 0.86.5's web Dropdown paints two unnamed buttons and exposes no
     # named combobox/listbox node in Chromium's accessibility tree. Use the
     # native PopupMenuButton instead: its InkWell remains the real keyboard
-    # action while the merged child Semantics supplies one stable AX name and
-    # the selected value. Each 48px menu item performs the same filter update.
+    # action while the custom tooltip supplies one stable AX name/value and
+    # suppresses Flutter's generic "Show menu" label. Each 48px menu item
+    # performs the same filter update.
     level_filter = ft.PopupMenuButton(
         key="admin-level-filter",
+        tooltip=f"Class (level): {selected_level_label}",
         menu_position=ft.PopupMenuPosition.UNDER,
         items=[
             ft.PopupMenuItem(
@@ -196,7 +198,6 @@ def AdminGradesScreen(
         height=theme.CONTROL_HEIGHT,
         padding=0,
         content=ft.Semantics(
-            label=f"Class (level): {selected_level_label}",
             exclude_semantics=True,
             content=ft.Container(
                 width=220,

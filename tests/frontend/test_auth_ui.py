@@ -1805,9 +1805,10 @@ def test_admin_filter_callback_and_mutually_exclusive_error_classifier(
 
     assert selected == ["B2"]
     assert isinstance(level_filter, admin_grades_screen.ft.PopupMenuButton)
+    assert level_filter.tooltip == "Class (level): All levels"
     assert level_filter.height >= 44
     assert level_filter.content.exclude_semantics is True
-    assert level_filter.content.label == "Class (level): All levels"
+    assert level_filter.content.label is None
     assert b2_option.height >= 44
     assert b2_option.content == "B2"
     assert admin_grades_screen.classify_load_error(QuizApiError(403, "denied")) == (
