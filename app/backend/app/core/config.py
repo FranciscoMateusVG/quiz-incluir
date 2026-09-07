@@ -1,9 +1,20 @@
 from functools import lru_cache
-from pathlib import Path
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from typing import List
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.client_ip import parse_trusted_proxy_cidrs
+
+
+_PRIVATE_AUTH_NETWORKS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("fc00::/7"),
+)
 
 
 class Settings(BaseSettings):
@@ -42,19 +53,86 @@ class Settings(BaseSettings):
         "The quiz backend delegates all end-user authentication to this service.",
     )
 
+    @field_validator("MONOREPO_AUTH_URL")
+    @classmethod
+    def require_private_auth_url(cls, v: str) -> str:
+        parsed = urlparse(v)
+        host = parsed.hostname
+        if (
+            parsed.scheme != "http"
+            or not host
+            or parsed.path not in {"", "/"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "MONOREPO_AUTH_URL must be an internal HTTP service origin"
+            )
+        try:
+            address = ip_address(host)
+        except ValueError:
+            # Current composition uses the single-label Docker service name
+            # `hono-app`; public multi-label fallbacks are intentionally denied.
+            if "." in host and host != "localhost":
+                raise ValueError("MONOREPO_AUTH_URL must not be a public hostname")
+        else:
+            private_address = any(
+                address.version == network.version and address in network
+                for network in _PRIVATE_AUTH_NETWORKS
+            )
+            if not (private_address or address.is_loopback or address.is_link_local):
+                raise ValueError("MONOREPO_AUTH_URL must not be a public IP address")
+        return v.rstrip("/")
+
+    TRUSTED_PROXY_CIDRS: str = Field(
+        default="",
+        description="Comma-separated, narrow CIDRs for the public reverse proxies whose "
+        "X-Forwarded-For chains may be interpreted. Empty trusts no proxies.",
+    )
+
+    @field_validator("TRUSTED_PROXY_CIDRS")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, v: str) -> str:
+        # Parse during settings construction so malformed or wildcard trust
+        # fails startup rather than silently changing rate-limit attribution.
+        parse_trusted_proxy_cidrs(v)
+        return v
+
+    @property
+    def trusted_proxy_networks(self) -> tuple[IPv4Network | IPv6Network, ...]:
+        return parse_trusted_proxy_cidrs(self.TRUSTED_PROXY_CIDRS)
+
+    FLET_SESSION_TIMEOUT_SECONDS: int = Field(
+        default=3600,
+        ge=1,
+        le=3600,
+        description="Disconnected Flet session retention. Production default/max is one hour.",
+    )
+
     SECRET_KEY: str = Field(
         default="your-secret-key-change-in-production",
         description="Session-signing key for the SQLAdmin backoffice panel only.",
     )
 
-    FRONTEND_URL: str = Field(default="http://localhost:3000", description="Frontend URL for CORS and OAuth redirects")
+    FRONTEND_URL: str = Field(
+        default="http://localhost:3000",
+        description="Frontend URL for CORS and OAuth redirects",
+    )
 
-    ALL_CORS_ORIGINS: List[str] = Field(default=["*"], description="Allowed CORS origins")
+    ALL_CORS_ORIGINS: List[str] = Field(
+        default=["*"], description="Allowed CORS origins"
+    )
 
-    DEFAULT_USER_LEVEL: str = Field(default="B1", description="Default course level for new users")
+    DEFAULT_USER_LEVEL: str = Field(
+        default="B1", description="Default course level for new users"
+    )
 
     ADMIN_USERNAME: str = Field(default="admin", description="SQLAdmin panel username")
-    ADMIN_PASSWORD: str = Field(default="change-me", description="SQLAdmin panel password")
+    ADMIN_PASSWORD: str = Field(
+        default="change-me", description="SQLAdmin panel password"
+    )
 
 
 @lru_cache

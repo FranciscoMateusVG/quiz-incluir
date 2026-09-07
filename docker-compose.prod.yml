@@ -11,10 +11,12 @@
 #   QUIZ_DB_PASSWORD   — Postgres password for the dedicated quiz DB
 #   SECRET_KEY         — session-signing key for the SQLAdmin panel (generate: openssl rand -hex 32)
 #   MONOREPO_AUTH_URL  — base URL of the Programa Incluir monorepo's auth API (hono-app).
-#                        Use the internal hostname (e.g. http://hono-app:3003) ONLY if this
-#                        service and hono-app's container are confirmed to share the same
-#                        dokploy-network; otherwise use hono-app's public HTTPS URL
-#                        (e.g. https://new.programaincluir.org).
+#                        Must be a private HTTP service origin reachable on a shared network
+#                        (for example http://hono-app:3003). Public fallbacks are rejected.
+#   TRUSTED_PROXY_CIDRS — narrow comma-separated CIDRs for the public Traefik hop(s).
+#                        Required for per-client sign-in buckets in deployed environments.
+#                        Empty trusts no proxy and safely attributes requests to the socket
+#                        peer; wildcard CIDRs are rejected at application startup.
 #   ADMIN_USERNAME     — SQLAdmin panel login username (must not be left unset — the
 #                        app falls back to an insecure hardcoded default otherwise).
 #   ADMIN_PASSWORD     — SQLAdmin panel login password (generate: openssl rand -hex 16).
@@ -32,6 +34,7 @@ services:
       DATABASE_URL: postgresql://quiz:${QUIZ_DB_PASSWORD}@quiz-incluir-db-e17b8a:5432/quiz
       SECRET_KEY: ${SECRET_KEY}
       MONOREPO_AUTH_URL: ${MONOREPO_AUTH_URL}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     depends_on:

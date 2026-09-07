@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,18 +12,40 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import AdminAuth
 from app.admin.views import ALL_VIEWS
+from app.api.auth_errors import AuthAPIError, auth_api_error_handler
 from app.api.main import api_router
+from app.core.client_ip import (
+    CanonicalFletClientIpMiddleware,
+    PreserveOriginalPeerMiddleware,
+)
 from app.core.config import settings
 from app.core.database import engine, init_db
 
 
 API_V1_STR = "/api/v1"
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    yield
+    try:
+        # flet_fastapi.app() returns a sub-application, so its manager is not
+        # started automatically by the parent FastAPI lifespan. The manager
+        # owns disconnected-session expiry and temporary-resource cleanup.
+        await flet_fastapi.app_manager.start()
+        yield
+    except BaseException:
+        try:
+            await flet_fastapi.app_manager.shutdown()
+        except Exception:
+            # Teardown must not replace the startup/runtime failure that caused
+            # it. The original exception remains the actionable one.
+            logger.exception("Flet app-manager cleanup failed")
+        raise
+    else:
+        # Normal shutdown is allowed to report its own teardown failure.
+        await flet_fastapi.app_manager.shutdown()
 
 
 app = FastAPI(
@@ -30,6 +53,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+app.add_exception_handler(AuthAPIError, auth_api_error_handler)
 
 # Set all CORS enabled origins
 if settings.ALL_CORS_ORIGINS:
@@ -43,10 +67,16 @@ if settings.ALL_CORS_ORIGINS:
 
 # Session cookies for the SQLAdmin login below.
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+# Uvicorn runs with proxy-header rewriting disabled. Capture the untouched
+# socket peer once, before the mounted Flet app canonicalizes its WebSocket
+# scope for Page.client_ip.
+app.add_middleware(PreserveOriginalPeerMiddleware)
 
 app.include_router(api_router, prefix=API_V1_STR)
 
-admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY))
+admin = Admin(
+    app, engine, authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY)
+)
 for view in ALL_VIEWS:
     admin.add_view(view)
 
@@ -70,6 +100,7 @@ flet_app = flet_fastapi.app(
     main=_frontend_main.main,
     assets_dir=str(FRONTEND_DIR / "assets"),
     no_cdn=True,
+    session_timeout_seconds=settings.FLET_SESSION_TIMEOUT_SECONDS,
 )
 # flet.fastapi.app() builds its own bare FastAPI() instance under the hood
 # with the default docs/openapi routes still enabled — strip those so
@@ -79,4 +110,9 @@ flet_app.router.routes = [
     for route in flet_app.router.routes
     if getattr(route, "path", None) not in ("/docs", "/redoc", "/openapi.json")
 ]
-app.mount("/", flet_app)
+app.mount(
+    "/",
+    CanonicalFletClientIpMiddleware(
+        flet_app, trusted_proxy_cidrs=settings.trusted_proxy_networks
+    ),
+)
