@@ -47,6 +47,12 @@ class AppState:
     current_user: User | None = None
     return_route: str | None = None
     auth_notice: str = ""
+    # A retained Flet session is only a resumption capability, never an
+    # authorization decision. Protected routes remain neutral until /users/me
+    # has validated the current token for the exact route being rendered.
+    auth_validation_status: str = "unverified"
+    auth_validation_route: str | None = None
+    auth_validation_message: str = ""
 
     quiz: Quiz | None = None
     questions: list[Question] = dataclasses.field(default_factory=list)
@@ -78,6 +84,12 @@ class AppState:
         self.return_route = None
         return resolve_return_route(route, is_admin=is_admin)
 
+    def invalidate_auth_validation(self) -> None:
+        """Require a fresh session oracle without discarding cached auth data."""
+        self.auth_validation_status = "unverified"
+        self.auth_validation_route = None
+        self.auth_validation_message = ""
+
     def clear_session(self) -> None:
         """Clear auth and every attempt-bound value on logout or proven expiry."""
         self.token = None
@@ -85,6 +97,7 @@ class AppState:
         self.current_user = None
         self.return_route = None
         self.auth_notice = ""
+        self.invalidate_auth_validation()
         self.quiz = None
         self.questions = []
         self.answers = {}

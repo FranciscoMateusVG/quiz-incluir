@@ -72,9 +72,6 @@ def _error_code(error: Exception) -> str | None:
         return None
     if error.code:
         return error.code
-    if isinstance(error.detail, dict):
-        code = error.detail.get("code")
-        return code if isinstance(code, str) else None
     if isinstance(error.detail, str) and error.detail in _ERROR_MESSAGES:
         return error.detail
     return None
@@ -146,6 +143,9 @@ def LoginScreen(auth: AuthController):
                 and auth.state.current_user.role == UserRole.ADMIN
             )
             destination = auth.state.consume_return_route(is_admin=is_admin)
+            # login() just completed the authoritative /users/me call, so this
+            # one destination can render without an immediate duplicate probe.
+            auth.mark_validated_route(destination)
             page.navigate(destination)
         except Exception as ex:
             set_error(login_error_message(ex))
@@ -277,6 +277,7 @@ def LoginScreen(auth: AuthController):
                         header=True,
                         heading_level=1,
                         label="Acesse o Incluir Quiz",
+                        exclude_semantics=True,
                         content=ft.Text(
                             "Acesse o Incluir Quiz",
                             size=32,

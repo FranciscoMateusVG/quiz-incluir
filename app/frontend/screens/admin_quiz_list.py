@@ -35,15 +35,20 @@ def AdminQuizListScreen(
         def on_click(e, q=quiz):
             ft.context.page.navigate(f"/admin/grades/{q.id}")
 
-        return ft.Container(
-            border_radius=theme.CARD_RADIUS,
-            bgcolor=theme.SURFACE,
-            border=ft.Border.all(1, theme.BORDER),
+        return ft.Button(
+            key=f"admin-quiz-row-{quiz.id}",
+            tooltip=f"Ver notas de {quiz.title}",
+            on_click=on_click,
+            elevation=0,
+            style=ft.ButtonStyle(
+                padding=0,
+                bgcolor=theme.SURFACE,
+                side=ft.BorderSide(1, theme.BORDER),
+                shape=ft.RoundedRectangleBorder(radius=theme.CARD_RADIUS),
+            ),
             content=ft.Container(
                 padding=16,
                 border_radius=theme.CARD_RADIUS,
-                ink=True,
-                on_click=on_click,
                 content=ft.Row(
                     [
                         ft.Column(
@@ -51,7 +56,8 @@ def AdminQuizListScreen(
                                 ft.Text(quiz.title, size=16, weight=ft.FontWeight.BOLD),
                                 ft.Text(
                                     f"{(quiz.category or '').replace('_', ' ').title()} · "
-                                    f"{quiz.level} · {len(quiz.question_ids)} questions",
+                                    f"{getattr(quiz.level, 'value', quiz.level)} · "
+                                    f"{len(quiz.question_ids)} questions",
                                     size=13,
                                     color=theme.MUTED,
                                 ),

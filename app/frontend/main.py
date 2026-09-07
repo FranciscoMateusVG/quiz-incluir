@@ -15,6 +15,7 @@ from router import make_app
 from services.api import QuizApiClient
 from services.media import register_audio
 from state.app_state import AppState
+from widgets.auth_guard import protected_route_key
 
 
 def canonicalize_client_ip(value: object) -> str | None:
@@ -25,6 +26,35 @@ def canonicalize_client_ip(value: object) -> str | None:
         return str(ipaddress.ip_address(str(value)))
     except ValueError:
         return None
+
+
+def install_session_revalidation(
+    page: ft.Page, state: AppState, auth: AuthController
+) -> None:
+    """Neutralize retained protected trees, then revalidate after reconnect."""
+
+    def on_disconnect(e) -> None:
+        if state.token is None or state.current_user is None:
+            return
+        auth.invalidate_validation()
+        # Flet 0.86.5 discards observable scheduling after detaching the
+        # connection, while reconnect registration serializes the retained
+        # server Page before on_connect. The explicit update performs the
+        # component diff now (its network patch is intentionally dropped), so
+        # the retained tree already contains only AuthGuard's neutral gate.
+        page.update()
+
+    async def on_connect(e) -> None:
+        route = protected_route_key(page.route)
+        if (
+            route is not None
+            and state.token is not None
+            and state.current_user is not None
+        ):
+            await auth.revalidate(route, force=True)
+
+    page.on_disconnect = on_disconnect
+    page.on_connect = on_connect
 
 
 def main(page: ft.Page) -> None:
@@ -51,20 +81,22 @@ def main(page: ft.Page) -> None:
         config.API_URL,
         trusted_client_ip=canonicalize_client_ip(page.client_ip),
     )
+    auth = AuthController(state, api)
 
     def on_auth_required() -> None:
         # Only QuizApiClient's typed 401 auth_required path invokes this.
         # Outages and malformed upstream responses must preserve local state.
+        auth.invalidate_validation()
         state.clear_session()
         state.remember_return_route(page.route)
         state.auth_notice = "Sua sessão expirou. Entre novamente."
         page.navigate("/")
 
     api.set_auth_required_handler(on_auth_required)
-    auth = AuthController(state, api)
     quiz_controller = QuizController(state, api)
     admin_controller = AdminController(state, api)
 
+    install_session_revalidation(page, state, auth)
     page.render_views(make_app(state, auth, quiz_controller, admin_controller))
 
 

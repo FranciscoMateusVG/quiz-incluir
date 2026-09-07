@@ -7,6 +7,7 @@ network calls don't block the Flet UI event loop.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 import httpx
@@ -30,6 +31,7 @@ class QuizApiClient:
     ):
         self.base_url = (base_url or API_URL).rstrip("/")
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._operation_timeout = timeout
         self._trusted_client_ip = trusted_client_ip
         self._auth_required_handler: Callable[[], None] | None = None
 
@@ -56,8 +58,7 @@ class QuizApiClient:
             try:
                 body = resp.json()
                 if isinstance(body, dict):
-                    # Phase A errors are top-level. Retain legacy nested detail
-                    # for older endpoints while the backend transition lands.
+                    # Phase A's canonical AuthError fields are top-level.
                     code = body.get("code")
                     message = body.get("message")
                     retry_after_seconds = body.get("retry_after_seconds")
@@ -87,6 +88,23 @@ class QuizApiClient:
             return None
         return resp.json()
 
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Apply one absolute wall-clock budget to request plus body read."""
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                response = await self._client.request(
+                    method, f"{self.base_url}{path}", **kwargs
+                )
+                await response.aread()
+                return response
+        except TimeoutError as error:
+            raise QuizApiError(
+                503,
+                "authentication service timed out",
+                code="auth_unavailable",
+                message="Não foi possível acessar o serviço agora.",
+            ) from error
+
     # ---------- auth ----------
 
     async def login(self, cpf: str, password: str = "") -> Token:
@@ -95,16 +113,17 @@ class QuizApiClient:
             # This dedicated attribution header is emitted only by the
             # same-process loopback relay. Never forward a browser XFF value.
             headers = {"X-Quiz-Client-IP": self._trusted_client_ip}
-        resp = await self._client.post(
-            f"{self.base_url}/api/v1/auth/token",
+        resp = await self._request(
+            "POST",
+            "/api/v1/auth/token",
             data={"username": cpf, "password": password},
             headers=headers,
         )
         return Token.model_validate(self._handle(resp))
 
     async def logout(self, token: str) -> None:
-        resp = await self._client.post(
-            f"{self.base_url}/api/v1/auth/logout", headers=self._headers(token)
+        resp = await self._request(
+            "POST", "/api/v1/auth/logout", headers=self._headers(token)
         )
         if resp.status_code != 204:
             if resp.status_code >= 400:
@@ -118,22 +137,23 @@ class QuizApiClient:
         return None
 
     async def me(self, token: str) -> User:
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/users/me", headers=self._headers(token)
+        resp = await self._request(
+            "GET", "/api/v1/users/me", headers=self._headers(token)
         )
         return User.model_validate(self._handle(resp))
 
     # ---------- quizzes / questions ----------
 
     async def list_quizzes(self, token: str) -> list[Quiz]:
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/quizzes", headers=self._headers(token)
+        resp = await self._request(
+            "GET", "/api/v1/quizzes", headers=self._headers(token)
         )
         return [Quiz.model_validate(item) for item in self._handle(resp)]
 
     async def get_question(self, token: str, question_id: str) -> Question:
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/questions/{question_id}",
+        resp = await self._request(
+            "GET",
+            f"/api/v1/questions/{question_id}",
             headers=self._headers(token),
         )
         return Question.model_validate(self._handle(resp))
@@ -141,8 +161,9 @@ class QuizApiClient:
     # ---------- attempts ----------
 
     async def start_attempt(self, token: str, quiz_id: str) -> Attempt:
-        resp = await self._client.post(
-            f"{self.base_url}/api/v1/attempts",
+        resp = await self._request(
+            "POST",
+            "/api/v1/attempts",
             headers=self._headers(token),
             json={"quiz_id": str(quiz_id)},
         )
@@ -151,32 +172,30 @@ class QuizApiClient:
     async def submit_answer(
         self, token: str, attempt_id: str, question_id: str, response: dict
     ) -> AnswerRead:
-        resp = await self._client.post(
-            f"{self.base_url}/api/v1/attempts/{attempt_id}/answers",
+        resp = await self._request(
+            "POST",
+            f"/api/v1/attempts/{attempt_id}/answers",
             headers=self._headers(token),
             json={"question_id": str(question_id), "response": response},
         )
         return AnswerRead.model_validate(self._handle(resp))
 
     async def finish_attempt(self, token: str, attempt_id: str) -> AttemptResult:
-        resp = await self._client.post(
-            f"{self.base_url}/api/v1/attempts/{attempt_id}/finish",
+        resp = await self._request(
+            "POST",
+            f"/api/v1/attempts/{attempt_id}/finish",
             headers=self._headers(token),
         )
         return AttemptResult.model_validate(self._handle(resp))
 
     async def download_report_pdf(self, token: str, attempt_id: str) -> bytes:
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/attempts/{attempt_id}/report.pdf",
+        resp = await self._request(
+            "GET",
+            f"/api/v1/attempts/{attempt_id}/report.pdf",
             headers=self._headers(token),
         )
         if resp.status_code >= 400:
-            detail = resp.text
-            try:
-                detail = resp.json().get("detail", detail)
-            except Exception:
-                pass
-            raise QuizApiError(resp.status_code, detail)
+            self._handle(resp)
         return resp.content
 
     # ---------- admin ----------
@@ -185,8 +204,9 @@ class QuizApiClient:
         self, token: str, quiz_id: str, level: str | None = None
     ) -> list[AdminAttemptRow]:
         params = {"level": level} if level else {}
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/admin/quizzes/{quiz_id}/attempts",
+        resp = await self._request(
+            "GET",
+            f"/api/v1/admin/quizzes/{quiz_id}/attempts",
             headers=self._headers(token),
             params=params,
         )
@@ -196,8 +216,9 @@ class QuizApiClient:
         self, token: str, quiz_id: str, level: str | None = None
     ) -> list[QuestionStatRow]:
         params = {"level": level} if level else {}
-        resp = await self._client.get(
-            f"{self.base_url}/api/v1/admin/quizzes/{quiz_id}/question-stats",
+        resp = await self._request(
+            "GET",
+            f"/api/v1/admin/quizzes/{quiz_id}/question-stats",
             headers=self._headers(token),
             params=params,
         )

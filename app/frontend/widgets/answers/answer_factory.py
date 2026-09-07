@@ -40,6 +40,7 @@ def _option_row(input_control: ft.Control, text: str) -> ft.Control:
     did for a "tap anywhere on the row" affordance. Not worth the
     reliability cost for a slightly bigger tap target.
     """
+    input_control.height = theme.MIN_TARGET_SIZE
     # Merge the detached, wrapping Text back into the selection control's
     # semantics so browser automation and assistive tech get one named target.
     return ft.Semantics(
@@ -120,8 +121,18 @@ class TrueFalse(AnswerWidget):
         group = ft.RadioGroup(
             content=ft.Row(
                 [
-                    ft.Radio(key="answer-true", value="true", label="True"),
-                    ft.Radio(key="answer-false", value="false", label="False"),
+                    ft.Radio(
+                        key="answer-true",
+                        value="true",
+                        label="True",
+                        height=theme.MIN_TARGET_SIZE,
+                    ),
+                    ft.Radio(
+                        key="answer-false",
+                        value="false",
+                        label="False",
+                        height=theme.MIN_TARGET_SIZE,
+                    ),
                 ],
                 spacing=12,
             )

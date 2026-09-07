@@ -32,6 +32,14 @@ _LEVEL_OPTIONS = [ft.DropdownOption(key="", text="All levels")] + [
 ]
 
 
+def classify_load_error(error: Exception) -> tuple[bool, str]:
+    """Keep the permission and availability states mutually exclusive."""
+    if isinstance(error, QuizApiError) and error.status_code == 403:
+        return True, ""
+    detail = error.detail if isinstance(error, QuizApiError) else str(error)
+    return False, f"Could not load grades: {detail}"
+
+
 def _build_boxplot_png(attempts) -> str:
     """Render a grade-distribution boxplot (one box per CourseLevel present)
     to a base64-encoded PNG string, for display via ``ft.Image(src=...)`` —
@@ -98,12 +106,13 @@ def AdminGradesScreen(
             set_error("")
             set_forbidden(False)
         except QuizApiError as ex:
-            if ex.status_code == 403:
-                set_forbidden(True)
-            else:
-                set_error(f"Could not load grades: {ex.detail}")
+            next_forbidden, next_error = classify_load_error(ex)
+            set_forbidden(next_forbidden)
+            set_error(next_error)
         except Exception as ex:
-            set_error(f"Could not load grades: {ex}")
+            next_forbidden, next_error = classify_load_error(ex)
+            set_forbidden(next_forbidden)
+            set_error(next_error)
         finally:
             set_loading(False)
 
@@ -127,11 +136,13 @@ def AdminGradesScreen(
         set_loading(True)
 
     level_filter = ft.Dropdown(
+        key="admin-level-filter",
         label="Class (level)",
         value=level,
         options=_LEVEL_OPTIONS,
         on_select=on_level_change,
         width=220,
+        height=theme.CONTROL_HEIGHT,
         border_radius=theme.INPUT_RADIUS,
     )
 

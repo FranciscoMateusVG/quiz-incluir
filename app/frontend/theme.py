@@ -22,7 +22,8 @@ ACTION_PRIMARY_HOVER = "#B8451B"
 # Status colors
 SUCCESS = "#2E7D32"
 SUCCESS_LIGHT = "#E8F5E9"
-ERROR = "#D64545"
+# 5.65:1 on ERROR_LIGHT: normal-sized error copy remains WCAG AA.
+ERROR = "#B42318"
 ERROR_LIGHT = "#FBEAEA"
 
 # Text
@@ -130,7 +131,7 @@ def primary_button(content, **kwargs) -> ft.FilledButton:
     return ft.FilledButton(**defaults)
 
 
-def icon_action(*, icon, tooltip: str, on_click=None, **kwargs) -> ft.Semantics:
+def icon_action(*, icon, tooltip: str, on_click=None, **kwargs) -> ft.IconButton:
     """Named 44px icon action; the glyph can remain optically smaller."""
     defaults = {
         "icon": icon,
@@ -145,11 +146,7 @@ def icon_action(*, icon, tooltip: str, on_click=None, **kwargs) -> ft.Semantics:
         "on_click": on_click,
     }
     defaults.update(kwargs)
-    return ft.Semantics(
-        label=tooltip,
-        button=True,
-        content=ft.IconButton(**defaults),
-    )
+    return ft.IconButton(**defaults)
 
 
 def page_theme() -> ft.Theme:

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "app" / "shared"))
 sys.path.insert(0, str(ROOT / "app" / "frontend"))
 
 from controllers.auth_controller import AuthController  # noqa: E402
-from main import canonicalize_client_ip  # noqa: E402
+from main import canonicalize_client_ip, install_session_revalidation  # noqa: E402
 import screens.login as login_screen  # noqa: E402
 from screens.login import (  # noqa: E402
     format_cpf,
@@ -30,8 +30,12 @@ from quiz_shared.enums import QuestionType, UserRole  # noqa: E402
 from widgets.answers.answer_factory import answer_factory  # noqa: E402
 from widgets.navbar import app_bar  # noqa: E402
 import screens.picker as picker_screen  # noqa: E402
+import screens.admin_grades as admin_grades_screen  # noqa: E402
+import screens.admin_quiz_list as admin_quiz_list_screen  # noqa: E402
 import screens.question as question_screen  # noqa: E402
 import screens.results as results_screen  # noqa: E402
+import theme  # noqa: E402
+import widgets.auth_guard as auth_guard  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -261,10 +265,10 @@ def test_login_errors_are_classified_without_exposing_backend_detail() -> None:
         assert code not in message
 
 
-def test_login_error_mapping_accepts_fastapi_nested_detail() -> None:
+def test_login_error_mapping_does_not_claim_legacy_nested_error_contract() -> None:
     error = QuizApiError(403, {"code": "account_denied"})
 
-    assert login_error_message(error) == ("Esta conta não pode acessar o Incluir Quiz.")
+    assert login_error_message(error) == "Não foi possível entrar. Tente novamente."
 
 
 def test_typed_error_payload_keeps_code_and_retry_metadata() -> None:
@@ -531,7 +535,6 @@ def test_login_component_tree_has_named_minimum_size_auth_controls(monkeypatch) 
     assert password_visibility.height >= 44
     assert submit.height >= 44
     assert "Entrar no Quiz" in _text_values(submit)
-    assert any(item.label == "Mostrar senha" and item.button for item in semantics)
     assert any(item.live_region and item.content is status for item in semantics)
 
 
@@ -571,7 +574,7 @@ def test_account_menu_is_named_and_preserves_quiz_local_role_visibility(
     assert ("account-admin-grades" in keyed) is has_admin_item
     if has_admin_item:
         assert _keyed(bar, "account-admin-grades").content == "Notas"
-    assert any(item.label == "Conta" and item.button for item in semantics)
+    assert not any(item.label == "Conta" for item in semantics)
 
 
 def test_answer_choice_tree_has_stable_keys_and_merged_accessible_names() -> None:
@@ -592,6 +595,8 @@ def test_answer_choice_tree_has_stable_keys_and_merged_accessible_names() -> Non
     }
     assert first.value == "First answer"
     assert second.value == "A second answer that can wrap"
+    assert first.height >= 44
+    assert second.height >= 44
     assert names == {"First answer", "A second answer that can wrap"}
 
 
@@ -629,6 +634,8 @@ def test_answer_true_false_tree_has_stable_named_controls() -> None:
     false_control = _keyed(control, "answer-false")
     assert true_control.label == "True"
     assert false_control.label == "False"
+    assert true_control.height >= 44
+    assert false_control.height >= 44
 
 
 def test_answer_short_text_tree_has_stable_label_and_minimum_height() -> None:
@@ -706,8 +713,15 @@ def test_picker_quiz_card_tree_exposes_named_button_semantics(monkeypatch) -> No
     state.email = "learner@example.test"
     state.current_user = SimpleNamespace(role=UserRole.STUDENT)  # type: ignore[assignment]
     auth = SimpleNamespace(logout=lambda: None)
-    controller = SimpleNamespace()
-    page = SimpleNamespace(navigate=lambda route: None)
+    starts: list[object] = []
+
+    class Controller:
+        async def start(self, selected) -> None:
+            starts.append(selected)
+
+    controller = Controller()
+    routes: list[str] = []
+    page = SimpleNamespace(navigate=routes.append)
     hook_states = iter(
         [
             ([quiz], lambda value: None),
@@ -722,8 +736,533 @@ def test_picker_quiz_card_tree_exposes_named_button_semantics(monkeypatch) -> No
 
     view = picker_screen.QuizPickerScreen.__wrapped__(state, controller, auth)
 
-    card = _keyed(view, "quiz-card-quiz-1")
-    assert isinstance(card, login_screen.ft.Semantics)
-    assert card.label == "Abrir quiz Intermediate Check"
-    assert card.button is True
-    assert card.container is True
+    action = _keyed(view, "quiz-card-quiz-1")
+    assert isinstance(action, login_screen.ft.Button)
+    assert action.tooltip == "Abrir quiz Intermediate Check"
+    assert callable(action.on_click)
+    asyncio.run(action.on_click(None))
+    assert starts == [quiz]
+    assert routes == ["/quiz/0"]
+
+
+class _DelayedBody(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes], delay: float) -> None:
+        self.chunks = chunks
+        self.delay = delay
+        self.cancelled = False
+
+    async def __aiter__(self):
+        try:
+            for chunk in self.chunks:
+                await asyncio.sleep(self.delay)
+                yield chunk
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+def test_api_absolute_deadline_cancels_dripping_response_body() -> None:
+    stream = _DelayedBody(
+        [b'{"access_token":', b'"opaque",', b'"token_type":"bearer"}'],
+        delay=0.03,
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    async def exercise() -> QuizApiError:
+        api = QuizApiClient("https://quiz.example.test", timeout=0.05)
+        await api._client.aclose()
+        api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            with pytest.raises(QuizApiError) as raised:
+                await api.login("09149991680", "password")
+            await asyncio.sleep(0.05)
+            return raised.value
+        finally:
+            await api.aclose()
+
+    error = asyncio.run(exercise())
+
+    assert error.status_code == 503
+    assert error.code == "auth_unavailable"
+    assert stream.cancelled is True
+
+
+@pytest.mark.parametrize("method_name", ["list_quizzes", "download_report_pdf"])
+def test_every_authenticated_body_path_invalidates_once_on_top_level_401(
+    method_name: str,
+) -> None:
+    invalidations: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"code": "auth_required", "message": "sign in"})
+
+    async def exercise() -> None:
+        api = QuizApiClient("https://quiz.example.test")
+        await api._client.aclose()
+        api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        api.set_auth_required_handler(lambda: invalidations.append("cleared"))
+        try:
+            with pytest.raises(QuizApiError):
+                if method_name == "download_report_pdf":
+                    await api.download_report_pdf("opaque", "attempt")
+                else:
+                    await api.list_quizzes("opaque")
+        finally:
+            await api.aclose()
+
+    asyncio.run(exercise())
+    assert invalidations == ["cleared"]
+
+
+@pytest.mark.parametrize("status", [502, 503])
+@pytest.mark.parametrize("method_name", ["list_quizzes", "download_report_pdf"])
+def test_authenticated_outage_never_invalidates_local_session(
+    status: int, method_name: str
+) -> None:
+    invalidations: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        code = "auth_invalid_response" if status == 502 else "auth_unavailable"
+        return httpx.Response(status, json={"code": code, "message": "retry"})
+
+    async def exercise() -> None:
+        api = QuizApiClient("https://quiz.example.test")
+        await api._client.aclose()
+        api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        api.set_auth_required_handler(lambda: invalidations.append("cleared"))
+        try:
+            with pytest.raises(QuizApiError):
+                if method_name == "download_report_pdf":
+                    await api.download_report_pdf("opaque", "attempt")
+                else:
+                    await api.list_quizzes("opaque")
+        finally:
+            await api.aclose()
+
+    asyncio.run(exercise())
+    assert invalidations == []
+
+
+def test_logout_deadline_still_clears_local_state() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204, stream=_DelayedBody([b""], delay=0.1))
+
+    async def exercise() -> tuple[bool, AppState]:
+        api = QuizApiClient("https://quiz.example.test", timeout=0.02)
+        await api._client.aclose()
+        api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        state = _authenticated_state()
+        auth = AuthController(state, api)
+        try:
+            return await auth.logout(), state
+        finally:
+            await api.aclose()
+
+    confirmed, state = asyncio.run(exercise())
+    assert confirmed is False
+    _assert_local_session_cleared(state)
+
+
+def _relative_luminance(color: str) -> float:
+    channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [
+        channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def test_login_error_palette_meets_wcag_aa_for_normal_text() -> None:
+    foreground = _relative_luminance(theme.ERROR)
+    background = _relative_luminance(theme.ERROR_LIGHT)
+    contrast = (max(foreground, background) + 0.05) / (
+        min(foreground, background) + 0.05
+    )
+    assert contrast >= 4.5
+
+
+class _RevalidationApi:
+    def __init__(self, result: object = None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[str] = []
+
+    async def me(self, token: str):
+        self.calls.append(token)
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def test_revalidation_refreshes_role_before_marking_route_valid() -> None:
+    state = _authenticated_state()
+    state.auth_validation_status = "valid"
+    state.auth_validation_route = "/quizzes"
+    refreshed = SimpleNamespace(email="learner@incluir.test", role=UserRole.STUDENT)
+    api = _RevalidationApi(refreshed)
+    auth = AuthController(state, api)  # type: ignore[arg-type]
+
+    outcome = asyncio.run(auth.revalidate("/admin/grades", force=True))
+
+    assert outcome == "valid"
+    assert state.current_user is refreshed
+    assert state.auth_validation_route == "/admin/grades"
+    assert state.auth_validation_status == "valid"
+
+
+def test_revalidation_outage_preserves_auth_but_blocks_cached_render() -> None:
+    state = _authenticated_state()
+    cached_user = state.current_user
+    api = _RevalidationApi(error=QuizApiError(503, "retry", code="auth_unavailable"))
+    auth = AuthController(state, api)  # type: ignore[arg-type]
+
+    outcome = asyncio.run(auth.revalidate("/quizzes", force=True))
+
+    assert outcome == "unavailable"
+    assert state.token == "opaque-better-auth-cookie"
+    assert state.current_user is cached_user
+    assert state.auth_validation_status == "unavailable"
+    assert state.auth_validation_route == "/quizzes"
+
+
+def test_late_revalidation_result_cannot_restore_content_after_invalidation() -> None:
+    async def scenario() -> tuple[str, AppState]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        refreshed = SimpleNamespace(email="learner@incluir.test", role=UserRole.STUDENT)
+
+        class BlockingApi:
+            async def me(self, token: str):
+                started.set()
+                await release.wait()
+                return refreshed
+
+        state = _authenticated_state()
+        auth = AuthController(state, BlockingApi())  # type: ignore[arg-type]
+        task = asyncio.create_task(auth.revalidate("/quizzes", force=True))
+        await started.wait()
+        auth.invalidate_validation()
+        release.set()
+        return await task, state
+
+    outcome, state = asyncio.run(scenario())
+    assert outcome == "stale"
+    assert state.auth_validation_status == "unverified"
+    assert state.auth_validation_route is None
+
+
+def test_revalidation_proven_401_clears_complete_session_once() -> None:
+    async def scenario() -> tuple[str, AppState, list[str]]:
+        def respond(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                401, json={"code": "auth_required", "message": "sign in"}
+            )
+
+        api = QuizApiClient("https://quiz.example.test")
+        await api._client.aclose()
+        api._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        state = _authenticated_state()
+        auth = AuthController(state, api)
+        invalidations: list[str] = []
+
+        def clear() -> None:
+            invalidations.append("cleared")
+            auth.invalidate_validation()
+            state.clear_session()
+
+        api.set_auth_required_handler(clear)
+        try:
+            return await auth.revalidate("/quizzes", force=True), state, invalidations
+        finally:
+            await api.aclose()
+
+    outcome, state, invalidations = asyncio.run(scenario())
+    assert outcome == "invalid"
+    assert invalidations == ["cleared"]
+    _assert_local_session_cleared(state)
+
+
+def test_disconnect_neutralizes_validation_and_forces_server_tree_update() -> None:
+    state = _authenticated_state()
+    state.auth_validation_status = "valid"
+    state.auth_validation_route = "/quizzes"
+    auth = SimpleNamespace(
+        invalidate_validation=lambda: state.invalidate_auth_validation()
+    )
+    updates: list[str] = []
+    page = SimpleNamespace(route="/quizzes", update=lambda: updates.append("updated"))
+
+    install_session_revalidation(page, state, auth)  # type: ignore[arg-type]
+    page.on_disconnect(None)
+
+    assert state.token == "opaque-better-auth-cookie"
+    assert state.auth_validation_status == "unverified"
+    assert state.auth_validation_route is None
+    assert updates == ["updated"]
+
+
+def test_reconnect_forces_authoritative_check_only_for_protected_route() -> None:
+    state = _authenticated_state()
+    calls: list[tuple[str, bool]] = []
+
+    class FakeAuth:
+        def invalidate_validation(self) -> None:
+            pass
+
+        async def revalidate(self, route: str, *, force: bool = False) -> None:
+            calls.append((route, force))
+
+    page = SimpleNamespace(route="/results", update=lambda: None)
+    install_session_revalidation(page, state, FakeAuth())  # type: ignore[arg-type]
+    asyncio.run(page.on_connect(None))
+    page.route = "/"
+    asyncio.run(page.on_connect(None))
+
+    assert calls == [("/results", True)]
+
+
+def test_route_mismatch_guard_never_invokes_protected_render(monkeypatch) -> None:
+    state = _authenticated_state()
+    state.auth_validation_status = "valid"
+    state.auth_validation_route = "/quizzes"
+    page = SimpleNamespace(route="/admin/grades", navigate=lambda route: None)
+    monkeypatch.setattr(auth_guard.ft, "context", SimpleNamespace(page=page))
+    monkeypatch.setattr(auth_guard, "_AuthCheck", lambda *args: "auth-gate")
+
+    def forbidden_render():
+        raise AssertionError("protected content rendered before /users/me")
+
+    control = auth_guard.AuthGuard.__wrapped__(
+        state, SimpleNamespace(), forbidden_render, admin_only=True
+    )
+    assert control == "auth-gate"
+
+
+def test_refreshed_role_downgrade_redirects_before_admin_render(monkeypatch) -> None:
+    state = _authenticated_state()
+    state.current_user = SimpleNamespace(role=UserRole.STUDENT)  # type: ignore[assignment]
+    state.auth_validation_status = "valid"
+    state.auth_validation_route = "/admin/grades"
+    page = SimpleNamespace(route="/admin/grades", navigate=lambda route: None)
+    monkeypatch.setattr(auth_guard.ft, "context", SimpleNamespace(page=page))
+    monkeypatch.setattr(auth_guard, "_redirecting", lambda route: ("redirect", route))
+
+    def forbidden_render():
+        raise AssertionError("downgraded role rendered admin content")
+
+    control = auth_guard.AuthGuard.__wrapped__(
+        state, SimpleNamespace(), forbidden_render, admin_only=True
+    )
+    assert control == ("redirect", "/quizzes")
+
+
+def test_unavailable_gate_has_live_named_retry_and_no_protected_content(
+    monkeypatch,
+) -> None:
+    state = _authenticated_state()
+    state.auth_validation_status = "unavailable"
+    state.auth_validation_route = "/quizzes"
+    state.auth_validation_message = "Não foi possível verificar sua sessão."
+    monkeypatch.setattr(auth_guard, "use_effect", lambda callback, deps: None)
+
+    view = auth_guard._AuthCheck.__wrapped__(
+        state, SimpleNamespace(revalidate=lambda *args, **kwargs: None), "/quizzes"
+    )
+    retry = _keyed(view, "auth-check-retry")
+    semantics = [
+        item
+        for item in _walk_controls(view)
+        if isinstance(item, login_screen.ft.Semantics)
+    ]
+    assert retry.height >= 44
+    assert callable(retry.on_click)
+    assert any(item.live_region for item in semantics)
+
+
+def test_login_submit_and_password_eye_callbacks_change_state_and_navigate(
+    monkeypatch,
+) -> None:
+    setter_values: list[tuple[str, object]] = []
+    hook_values = iter(
+        [
+            ("091.499.916-80", lambda value: setter_values.append(("cpf", value))),
+            ("secret", lambda value: setter_values.append(("password", value))),
+            (False, lambda value: setter_values.append(("eye", value))),
+            ("", lambda value: setter_values.append(("error", value))),
+            (False, lambda value: setter_values.append(("loading", value))),
+        ]
+    )
+    state = AppState(return_route="/quizzes")
+    validated: list[str] = []
+
+    class FakeAuth:
+        def __init__(self) -> None:
+            self.state = state
+
+        async def login(self, cpf: str, password: str) -> None:
+            assert (cpf, password) == ("09149991680", "secret")
+            self.state.current_user = SimpleNamespace(role=UserRole.STUDENT)
+
+        def mark_validated_route(self, route: str) -> None:
+            validated.append(route)
+
+    routes: list[str] = []
+    page = SimpleNamespace(
+        title="", route="/", update=lambda: None, navigate=routes.append
+    )
+    monkeypatch.setattr(login_screen, "use_state", lambda initial: next(hook_values))
+    monkeypatch.setattr(login_screen, "use_effect", lambda callback, deps: None)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    view = login_screen.LoginScreen.__wrapped__(FakeAuth())
+    eye = _keyed(view, "login-password-visibility")
+    submit = _keyed(view, "login-submit")
+    eye.on_click(None)
+    asyncio.run(submit.on_click(None))
+
+    assert ("eye", True) in setter_values
+    assert validated == ["/quizzes"]
+    assert routes == ["/quizzes"]
+
+
+def test_account_menu_destinations_and_logout_callbacks_navigate(monkeypatch) -> None:
+    state = AppState(email="admin@incluir.test")
+    state.current_user = SimpleNamespace(role=UserRole.ADMIN)  # type: ignore[assignment]
+    logouts: list[str] = []
+
+    class FakeAuth:
+        async def logout(self) -> bool:
+            logouts.append("logout")
+            return True
+
+    routes: list[str] = []
+    page = SimpleNamespace(navigate=routes.append)
+    monkeypatch.setattr(login_screen.ft, "context", SimpleNamespace(page=page))
+
+    bar = app_bar(state, FakeAuth())  # type: ignore[arg-type]
+    _keyed(bar, "account-quizzes").on_click(None)
+    _keyed(bar, "account-admin-grades").on_click(None)
+    asyncio.run(_keyed(bar, "account-logout").on_click(None))
+
+    assert routes == ["/quizzes", "/admin/grades", "/"]
+    assert logouts == ["logout"]
+
+
+def test_results_callbacks_navigate_and_download(monkeypatch) -> None:
+    state = AppState(attempt_id="attempt-1")
+    state.result = SimpleNamespace(score=4, max_score=4)  # type: ignore[assignment]
+    downloads: list[tuple[str, bytes]] = []
+
+    class Controller:
+        async def download_report(self) -> bytes:
+            return b"%PDF"
+
+    async def save(name: str, value: bytes) -> None:
+        downloads.append((name, value))
+
+    routes: list[str] = []
+    monkeypatch.setattr(
+        results_screen.ft,
+        "context",
+        SimpleNamespace(page=SimpleNamespace(navigate=routes.append)),
+    )
+    monkeypatch.setattr(results_screen, "save_bytes", save)
+
+    view = results_screen.ResultsScreen.__wrapped__(state, Controller())
+    _keyed(view, "results-take-another").on_click(None)
+    asyncio.run(_keyed(view, "results-download").on_click(None))
+
+    assert routes == ["/quizzes"]
+    assert downloads == [("quiz-report-attempt-1.pdf", b"%PDF")]
+
+
+def test_admin_quiz_row_is_native_keyboard_action_with_canonical_level(
+    monkeypatch,
+) -> None:
+    quiz = SimpleNamespace(
+        id="quiz-1",
+        title="Intermediate Check",
+        category="reading",
+        level=SimpleNamespace(value="B1"),
+        question_ids=["q1"],
+    )
+    hooks = iter(
+        [
+            ([quiz], lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    routes: list[str] = []
+    monkeypatch.setattr(admin_quiz_list_screen, "use_state", lambda value: next(hooks))
+    monkeypatch.setattr(admin_quiz_list_screen, "use_effect", lambda *args: None)
+    monkeypatch.setattr(
+        admin_quiz_list_screen.ft,
+        "context",
+        SimpleNamespace(page=SimpleNamespace(navigate=routes.append)),
+    )
+    state = AppState(email="admin@incluir.test")
+    state.current_user = SimpleNamespace(role=UserRole.ADMIN)  # type: ignore[assignment]
+
+    view = admin_quiz_list_screen.AdminQuizListScreen.__wrapped__(
+        state, SimpleNamespace(), SimpleNamespace()
+    )
+    row = _keyed(view, "admin-quiz-row-quiz-1")
+    row.on_click(None)
+
+    assert isinstance(row, login_screen.ft.Button)
+    assert routes == ["/admin/grades/quiz-1"]
+    assert any("B1" in value for value in _text_values(view))
+    assert all("namespace" not in value for value in _text_values(view))
+
+
+def test_admin_filter_callback_and_mutually_exclusive_error_classifier(
+    monkeypatch,
+) -> None:
+    selected: list[str] = []
+    hooks = iter(
+        [
+            ("", selected.append),
+            ([], lambda value: None),
+            ([], lambda value: None),
+            (False, lambda value: None),
+            ("", lambda value: None),
+            (False, lambda value: None),
+        ]
+    )
+    monkeypatch.setattr(admin_grades_screen, "use_state", lambda value: next(hooks))
+    monkeypatch.setattr(admin_grades_screen, "use_effect", lambda *args: None)
+    monkeypatch.setattr(
+        admin_grades_screen, "use_ref", lambda value: SimpleNamespace(current=value)
+    )
+    monkeypatch.setattr(
+        admin_grades_screen, "use_route_params", lambda: {"quiz_id": "quiz-1"}
+    )
+    monkeypatch.setattr(admin_grades_screen, "_build_boxplot_png", lambda items: "")
+    monkeypatch.setattr(
+        admin_grades_screen.ft,
+        "context",
+        SimpleNamespace(page=SimpleNamespace(navigate=lambda route: None)),
+    )
+    state = AppState(email="admin@incluir.test")
+    state.current_user = SimpleNamespace(role=UserRole.ADMIN)  # type: ignore[assignment]
+
+    view = admin_grades_screen.AdminGradesScreen.__wrapped__(
+        state, SimpleNamespace(), SimpleNamespace()
+    )
+    level_filter = _keyed(view, "admin-level-filter")
+    level_filter.on_select(SimpleNamespace(control=SimpleNamespace(value="B2")))
+
+    assert selected == ["B2"]
+    assert level_filter.height >= 44
+    assert admin_grades_screen.classify_load_error(QuizApiError(403, "denied")) == (
+        True,
+        "",
+    )
+    forbidden, message = admin_grades_screen.classify_load_error(
+        QuizApiError(500, "outage")
+    )
+    assert forbidden is False
+    assert "outage" in message

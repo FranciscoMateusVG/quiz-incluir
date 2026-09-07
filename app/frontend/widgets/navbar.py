@@ -65,17 +65,16 @@ def app_bar(
         )
     )
 
-    account_menu = ft.Semantics(
-        label="Conta",
-        button=True,
-        content=ft.PopupMenuButton(
-            key="account-menu",
-            tooltip="Conta",
-            width=theme.CONTROL_HEIGHT,
-            height=theme.CONTROL_HEIGHT,
-            padding=6,
-            menu_position=ft.PopupMenuPosition.UNDER,
-            items=items,
+    account_menu = ft.PopupMenuButton(
+        key="account-menu",
+        tooltip="Conta",
+        width=theme.CONTROL_HEIGHT,
+        height=theme.CONTROL_HEIGHT,
+        padding=6,
+        menu_position=ft.PopupMenuPosition.UNDER,
+        items=items,
+        content=ft.Semantics(
+            exclude_semantics=True,
             content=ft.CircleAvatar(
                 radius=18,
                 bgcolor=theme.ACTION_PRIMARY,

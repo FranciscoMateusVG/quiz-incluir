@@ -104,19 +104,22 @@ def QuizPickerScreen(state: AppState, controller: QuizController, auth: AuthCont
         async def on_card_click(e, q=quiz):
             await start(q)
 
-        return ft.Semantics(
+        return ft.Button(
             key=f"quiz-card-{quiz.id}",
-            label=f"Abrir quiz {quiz.title}",
-            button=True,
-            container=True,
+            tooltip=f"Abrir quiz {quiz.title}",
+            on_click=on_card_click,
+            elevation=0,
+            style=ft.ButtonStyle(
+                padding=0,
+                bgcolor=theme.SURFACE,
+                side=ft.BorderSide(1, theme.BORDER),
+                shape=ft.RoundedRectangleBorder(radius=theme.CARD_RADIUS),
+                animation_duration=250,
+            ),
             content=ft.Container(
                 border_radius=theme.CARD_RADIUS,
                 bgcolor=theme.SURFACE,
-                border=ft.Border.all(1, theme.BORDER),
                 padding=20,
-                ink=True,
-                on_click=on_card_click,
-                animate=ft.Animation(250, ft.AnimationCurve.EASE_OUT),
                 content=ft.Row(
                     [
                         ft.Container(

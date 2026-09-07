@@ -19,7 +19,7 @@ from screens.picker import QuizPickerScreen
 from screens.question import QuestionScreen
 from screens.results import ResultsScreen
 from state.app_state import AppState
-from widgets.auth_guard import require_auth
+from widgets.auth_guard import AuthGuard
 
 
 def make_app(
@@ -33,26 +33,32 @@ def make_app(
 
     @component
     def _picker():
-        return require_auth(state, lambda: QuizPickerScreen(state, quiz, auth))
+        return AuthGuard(state, auth, lambda: QuizPickerScreen(state, quiz, auth))
 
     @component
     def _question():
-        return require_auth(state, lambda: QuestionScreen(state, quiz))
+        return AuthGuard(state, auth, lambda: QuestionScreen(state, quiz))
 
     @component
     def _results():
-        return require_auth(state, lambda: ResultsScreen(state, quiz))
+        return AuthGuard(state, auth, lambda: ResultsScreen(state, quiz))
 
     @component
     def _admin_quizzes():
-        return require_auth(
-            state, lambda: AdminQuizListScreen(state, admin, auth), admin_only=True
+        return AuthGuard(
+            state,
+            auth,
+            lambda: AdminQuizListScreen(state, admin, auth),
+            admin_only=True,
         )
 
     @component
     def _admin_grades():
-        return require_auth(
-            state, lambda: AdminGradesScreen(state, admin, auth), admin_only=True
+        return AuthGuard(
+            state,
+            auth,
+            lambda: AdminGradesScreen(state, admin, auth),
+            admin_only=True,
         )
 
     @component
