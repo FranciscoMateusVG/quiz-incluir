@@ -413,7 +413,10 @@ def test_pronunciation_is_user_initiated_and_replays_cached_bytes(
     state = _authenticated_state()
     state.vocabulary_lookup_id = str(LOOKUP_ID)
     provider_calls: list[str] = []
-    plays: list[bytes] = []
+    prepared: list[bytes] = []
+    plays: list[float] = []
+    refs_holder: list[SimpleNamespace] = []
+    setter_values: list[tuple[str, object]] = []
 
     class Controller:
         def session_snapshot(self):
@@ -429,28 +432,47 @@ def test_pronunciation_is_user_initiated_and_replays_cached_bytes(
             provider_calls.append("pronunciation")
             return b"ID3-pronunciation"
 
-    async def play(page, content: bytes) -> None:
-        plays.append(content)
+    async def prepare(page, content: bytes) -> None:
+        prepared.append(content)
 
-    monkeypatch.setattr(vocabulary_screen, "play_audio_bytes", play)
+    async def play(page, *, timeout: float) -> None:
+        plays.append(timeout)
+        refs_holder[6].current.set()
+
+    monkeypatch.setattr(vocabulary_screen, "prepare_audio_bytes", prepare)
+    monkeypatch.setattr(vocabulary_screen, "play_prepared_audio", play)
     view, refs, _, _ = _render_screen(
         monkeypatch,
         state,
         Controller(),
         ["bom dia", _lookup(), "success", "Tradução pronta.", "idle", ""],
+        setters=setter_values,
     )
+    refs_holder.extend(refs)
     speaker = _keyed(view, "vocabulary-pronunciation")
 
     assert provider_calls == []
+    assert prepared == []
     assert plays == []
     assert speaker.content == "Ouvir pronúncia"
     assert speaker.height >= 44
 
     asyncio.run(speaker.on_click(None))
+    assert provider_calls == ["pronunciation"]
+    assert prepared == [b"ID3-pronunciation"]
+    assert plays == []
+    assert refs[4].current is False
+    assert ("audio_status", "ready") in setter_values
+    assert (
+        "audio_message",
+        "Áudio pronto. Toque novamente para ouvir.",
+    ) in setter_values
+
     asyncio.run(speaker.on_click(None))
 
     assert provider_calls == ["pronunciation"]
-    assert plays == [b"ID3-pronunciation"]
+    assert prepared == [b"ID3-pronunciation"]
+    assert plays == [vocabulary_screen.GENERATED_AUDIO_TIMEOUT]
 
     # A second tap is accepted only after the playback completion callback
     # releases the busy guard; the already-fetched bytes are then replayed.
@@ -458,9 +480,205 @@ def test_pronunciation_is_user_initiated_and_replays_cached_bytes(
     asyncio.run(speaker.on_click(None))
 
     assert provider_calls == ["pronunciation"]
-    assert plays == [b"ID3-pronunciation", b"ID3-pronunciation"]
+    assert prepared == [b"ID3-pronunciation"]
+    assert plays == [
+        vocabulary_screen.GENERATED_AUDIO_TIMEOUT,
+        vocabulary_screen.GENERATED_AUDIO_TIMEOUT,
+    ]
     assert "Voz gerada por inteligência artificial." in _text_values(view)
     assert "good morning" in _text_values(view)
+
+
+def test_vocabulary_play_timeout_reenables_retry_without_refetching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _authenticated_state()
+    state.vocabulary_lookup_id = str(LOOKUP_ID)
+    provider_calls: list[str] = []
+    setter_values: list[tuple[str, object]] = []
+    refs_holder: list[SimpleNamespace] = []
+    play_calls = 0
+
+    class Controller:
+        def session_snapshot(self):
+            return state.token, state.auth_session_generation
+
+        def session_is_current(self, token: str, generation: int) -> bool:
+            return (
+                state.token == token
+                and state.auth_session_generation == generation
+            )
+
+        async def pronunciation(self):
+            provider_calls.append("pronunciation")
+            return b"ID3-pronunciation"
+
+    async def prepare(page, content: bytes) -> None:
+        return None
+
+    async def timeout(page, *, timeout: float) -> None:
+        nonlocal play_calls
+        play_calls += 1
+        if play_calls == 1:
+            raise TimeoutError("browser did not answer")
+        refs_holder[6].current.set()
+
+    monkeypatch.setattr(vocabulary_screen, "prepare_audio_bytes", prepare)
+    monkeypatch.setattr(vocabulary_screen, "play_prepared_audio", timeout)
+    view, refs, _, _ = _render_screen(
+        monkeypatch,
+        state,
+        Controller(),
+        ["bom dia", _lookup(), "success", "Tradução pronta.", "idle", ""],
+        setters=setter_values,
+    )
+    refs_holder.extend(refs)
+    speaker = _keyed(view, "vocabulary-pronunciation")
+
+    asyncio.run(speaker.on_click(None))
+    asyncio.run(speaker.on_click(None))
+
+    assert provider_calls == ["pronunciation"]
+    assert refs[4].current is False
+    assert ("audio_status", "error") in setter_values
+    assert any(
+        name == "audio_message" and "indisponível" in str(value).lower()
+        for name, value in setter_values
+    )
+
+    asyncio.run(speaker.on_click(None))
+
+    assert provider_calls == ["pronunciation"]
+    assert play_calls == 2
+
+
+def test_vocabulary_audio_state_events_are_the_only_playback_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setter_values: list[tuple[str, object]] = []
+
+    class Audio:
+        on_state_change = None
+        src = media_service.PLACEHOLDER_SRC
+
+        def update(self):
+            return None
+
+    audio = Audio()
+
+    async def reset(page) -> None:
+        return None
+
+    monkeypatch.setattr(vocabulary_screen, "ensure_audio", lambda page: audio)
+    monkeypatch.setattr(vocabulary_screen, "reset_audio_source", reset)
+    view, refs, effects, _ = _render_screen(
+        monkeypatch,
+        _authenticated_state(),
+        SimpleNamespace(),
+        ["", None, "idle", "", "idle", ""],
+        setters=setter_values,
+    )
+
+    async def scenario() -> None:
+        effects[1][0]()
+        await asyncio.sleep(0)
+        refs[4].current = True
+        refs[5].current = True
+        refs[6].current = asyncio.Event()
+
+        audio.on_state_change(
+            SimpleNamespace(state=vocabulary_screen.AudioState.PLAYING)
+        )
+        assert refs[6].current.is_set()
+        assert refs[4].current is True
+
+        audio.on_state_change(
+            SimpleNamespace(state=vocabulary_screen.AudioState.COMPLETED)
+        )
+        assert refs[4].current is False
+
+        refs[4].current = True
+        refs[5].current = True
+        audio.on_state_change(
+            SimpleNamespace(state=vocabulary_screen.AudioState.DISPOSED)
+        )
+        assert refs[4].current is False
+        assert refs[5].current is False
+
+    asyncio.run(scenario())
+
+    assert ("audio_status", "playing") in setter_values
+    assert ("audio_status", "completed") in setter_values
+    assert ("audio_status", "error") in setter_values
+    assert _keyed(view, "vocabulary-empty") is not None
+
+
+def test_stale_play_cleanup_cannot_clear_a_newer_play_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _authenticated_state()
+    state.vocabulary_lookup_id = str(LOOKUP_ID)
+    old_started = asyncio.Event()
+    old_release = asyncio.Event()
+    new_started = asyncio.Event()
+    new_release = asyncio.Event()
+    play_calls = 0
+
+    class Controller:
+        def session_snapshot(self):
+            return state.token, state.auth_session_generation
+
+        def session_is_current(self, token: str, generation: int) -> bool:
+            return (
+                state.token == token
+                and state.auth_session_generation == generation
+            )
+
+        async def pronunciation(self):
+            raise AssertionError("prepared playback must not refetch")
+
+    async def play(page, *, timeout: float) -> None:
+        nonlocal play_calls
+        play_calls += 1
+        if play_calls == 1:
+            old_started.set()
+            await old_release.wait()
+        else:
+            new_started.set()
+            await new_release.wait()
+
+    monkeypatch.setattr(vocabulary_screen, "play_prepared_audio", play)
+    view, refs, _, _ = _render_screen(
+        monkeypatch,
+        state,
+        Controller(),
+        ["bom dia", _lookup(), "success", "Tradução pronta.", "ready", ""],
+    )
+    refs[3].current = b"ID3-pronunciation"
+    refs[5].current = True
+    speaker = _keyed(view, "vocabulary-pronunciation")
+
+    async def scenario() -> None:
+        old = asyncio.create_task(speaker.on_click(None))
+        await old_started.wait()
+
+        refs[2].current += 1
+        refs[4].current = False
+        newer = asyncio.create_task(speaker.on_click(None))
+        await new_started.wait()
+        newer_signal = refs[6].current
+
+        old_release.set()
+        await old
+        assert refs[6].current is newer_signal
+
+        newer_signal.set()
+        new_release.set()
+        await newer
+
+    asyncio.run(scenario())
+
+    assert play_calls == 2
 
 
 def test_vocabulary_audio_error_keeps_translation_and_exposes_retryable_copy(
@@ -519,36 +737,115 @@ def test_vocabulary_rate_limit_message_includes_bounded_retry() -> None:
     )
 
 
-def test_generated_audio_helpers_require_bytes_and_reset_to_local_silence(
+def test_generated_audio_helpers_prepare_then_play_with_bounded_invoke(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    calls: list[object] = []
 
     class Audio:
         src: str | bytes = "https://quiz-media.example/question.mp3"
+        on_loaded = None
 
         async def pause(self):
             calls.append("pause")
 
-        async def play(self):
-            calls.append("play")
+        async def _invoke_method(self, **kwargs):
+            calls.append(kwargs)
 
         def update(self):
             calls.append("update")
+            if isinstance(self.src, bytes) and self.on_loaded is not None:
+                self.on_loaded(None)
 
     audio = Audio()
     monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
 
     with pytest.raises(ValueError):
-        asyncio.run(media_service.play_audio_bytes(object(), b""))
+        asyncio.run(media_service.prepare_audio_bytes(object(), b""))
 
-    asyncio.run(media_service.play_audio_bytes(object(), b"ID3-audio"))
+    asyncio.run(media_service.prepare_audio_bytes(object(), b"ID3-audio"))
     assert audio.src == b"ID3-audio"
-    assert calls == ["update", "play"]
+    assert calls == ["update", "update"]
+
+    asyncio.run(media_service.play_prepared_audio(object(), timeout=0.25))
+    assert calls[-1] == {
+        "method_name": "play",
+        "arguments": {"position": 0},
+        "timeout": 0.25,
+    }
 
     asyncio.run(media_service.reset_audio_source(object()))
     assert audio.src == media_service.PLACEHOLDER_SRC
-    assert calls == ["update", "play", "pause", "update"]
+    assert calls[-2:] == ["pause", "update"]
+
+
+def test_generated_audio_prepare_timeout_restores_previous_loaded_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = object()
+
+    class Audio:
+        src: str | bytes = media_service.PLACEHOLDER_SRC
+        on_loaded = previous
+
+        def update(self):
+            return None
+
+    audio = Audio()
+    monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            media_service.prepare_audio_bytes(
+                object(),
+                b"ID3-audio",
+                timeout=0.001,
+            )
+        )
+
+    assert audio.on_loaded is previous
+
+
+def test_generated_audio_prepare_retry_forces_a_source_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Audio:
+        src: str | bytes = media_service.PLACEHOLDER_SRC
+        on_loaded = None
+        byte_updates = 0
+
+        def update(self):
+            if self.on_loaded is None:
+                return
+            if isinstance(self.src, bytes):
+                self.byte_updates += 1
+                if self.byte_updates > 1:
+                    self.on_loaded(None)
+            else:
+                self.on_loaded(None)
+
+    audio = Audio()
+    monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            media_service.prepare_audio_bytes(
+                object(),
+                b"ID3-audio",
+                timeout=0.001,
+            )
+        )
+
+    asyncio.run(
+        media_service.prepare_audio_bytes(
+            object(),
+            b"ID3-audio",
+            timeout=0.1,
+        )
+    )
+
+    assert audio.src == b"ID3-audio"
+    assert audio.byte_updates == 2
 
 
 def test_vocabulary_navigation_is_available_to_student_and_admin(

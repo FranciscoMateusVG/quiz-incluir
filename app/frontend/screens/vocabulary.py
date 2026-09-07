@@ -12,9 +12,11 @@ from flet import component, use_effect, use_ref, use_state
 from flet_audio import AudioState
 from services.exceptions import QuizApiError
 from services.media import (
+    GENERATED_AUDIO_TIMEOUT,
     PLACEHOLDER_SRC,
     ensure_audio,
-    play_audio_bytes,
+    play_prepared_audio,
+    prepare_audio_bytes,
     reset_audio_source,
 )
 from state.app_state import AppState
@@ -55,6 +57,8 @@ def VocabularyScreen(
     audio_owner = use_ref(0)
     audio_bytes = use_ref(None)
     audio_busy = use_ref(False)
+    audio_prepared = use_ref(False)
+    play_state_signal = use_ref(None)
 
     def set_page_title() -> None:
         page.title = "Vocabulário | Incluir Quiz"
@@ -72,8 +76,17 @@ def VocabularyScreen(
             set_audio_message("Pronúncia concluída.")
         elif state_value == AudioState.DISPOSED.value:
             audio_busy.current = False
+            audio_prepared.current = False
             set_audio_status("error")
             set_audio_message("Áudio indisponível neste navegador.")
+        if state_value in {
+            AudioState.PLAYING.value,
+            AudioState.COMPLETED.value,
+            AudioState.DISPOSED.value,
+        }:
+            signal = play_state_signal.current
+            if signal is not None:
+                signal.set()
 
     def bind_audio_events() -> None:
         audio = ensure_audio(page)
@@ -85,6 +98,8 @@ def VocabularyScreen(
         audio_owner.current += 1
         lookup_busy.current = False
         audio_busy.current = False
+        audio_prepared.current = False
+        play_state_signal.current = None
         audio = ensure_audio(page)
         audio.on_state_change = None
         if isinstance(audio.src, bytes):
@@ -112,6 +127,8 @@ def VocabularyScreen(
         audio_owner.current += 1
         audio_busy.current = False
         audio_bytes.current = None
+        audio_prepared.current = False
+        play_state_signal.current = None
         set_result(None)
         set_lookup_status("loading")
         set_lookup_message("Traduzindo…")
@@ -162,16 +179,58 @@ def VocabularyScreen(
         audio_busy.current = True
         audio_owner.current += 1
         owner = audio_owner.current
+        owned_signal = None
         set_audio_status("preparing")
         set_audio_message("Preparando pronúncia…")
         try:
             content = audio_bytes.current
             if content is None:
                 content = await controller.pronunciation()
-                if owner != audio_owner.current or content is None:
+                if owner != audio_owner.current:
+                    return
+                if content is None:
                     audio_busy.current = False
                     return
                 audio_bytes.current = content
+            if not audio_prepared.current:
+                await prepare_audio_bytes(page, content)
+                if (
+                    owner != audio_owner.current
+                    or not controller.session_is_current(
+                        session_token, session_generation
+                    )
+                ):
+                    if owner == audio_owner.current:
+                        audio_busy.current = False
+                    return
+                audio_prepared.current = True
+                audio_busy.current = False
+                set_audio_status("ready")
+                set_audio_message("Áudio pronto. Toque novamente para ouvir.")
+                return
+            if (
+                owner != audio_owner.current
+                or not controller.session_is_current(
+                    session_token, session_generation
+                )
+            ):
+                if owner == audio_owner.current:
+                    audio_busy.current = False
+                return
+            owned_signal = asyncio.Event()
+            play_state_signal.current = owned_signal
+            deadline = asyncio.get_running_loop().time() + GENERATED_AUDIO_TIMEOUT
+            await play_prepared_audio(page, timeout=GENERATED_AUDIO_TIMEOUT)
+            if owner != audio_owner.current:
+                return
+            if not controller.session_is_current(session_token, session_generation):
+                audio_busy.current = False
+                return
+            remaining = deadline - asyncio.get_running_loop().time()
+            if not owned_signal.is_set():
+                if remaining <= 0:
+                    raise TimeoutError("audio state transition timed out")
+                await asyncio.wait_for(owned_signal.wait(), timeout=remaining)
             if (
                 owner != audio_owner.current
                 or not controller.session_is_current(
@@ -180,19 +239,10 @@ def VocabularyScreen(
             ):
                 audio_busy.current = False
                 return
-            await play_audio_bytes(page, content)
-            if (
-                owner != audio_owner.current
-                or not controller.session_is_current(
-                    session_token, session_generation
-                )
-            ):
-                audio_busy.current = False
-                return
-            set_audio_status("playing")
-            set_audio_message("Reproduzindo pronúncia…")
         except Exception as error:
             if owner != audio_owner.current:
+                return
+            if owned_signal is not None and owned_signal.is_set():
                 return
             set_audio_status("error")
             set_audio_message(
@@ -202,6 +252,9 @@ def VocabularyScreen(
                 )
             )
             audio_busy.current = False
+        finally:
+            if play_state_signal.current is owned_signal:
+                play_state_signal.current = None
 
     active_result = (
         result
@@ -235,7 +288,12 @@ def VocabularyScreen(
         )
     else:
         can_replay = audio_bytes.current is not None
-        speaker_label = "Ouvir novamente" if can_replay else "Ouvir pronúncia"
+        if can_replay and audio_status == "completed":
+            speaker_label = "Ouvir novamente"
+        elif can_replay:
+            speaker_label = "Reproduzir pronúncia"
+        else:
+            speaker_label = "Ouvir pronúncia"
         result_card = theme.card(
             ft.Column(
                 [

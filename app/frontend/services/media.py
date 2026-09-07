@@ -15,6 +15,7 @@ client's page.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import urllib.parse
 
@@ -27,6 +28,7 @@ from services.page_store import get_or_create
 # without fetching quiz media on the logged-out page. It is replaced with the
 # real URL whenever a question's audio player attaches.
 PLACEHOLDER_SRC = "/silence.wav"
+GENERATED_AUDIO_TIMEOUT = 5.0
 
 
 def resolve_media_url(url: str | None, base_url: str) -> str:
@@ -94,14 +96,60 @@ async def reset_audio_source(page: ft.Page) -> None:
     audio.update()
 
 
-async def play_audio_bytes(page: ft.Page, content: bytes) -> None:
-    """Play nonempty generated audio through the pre-registered page service."""
+async def prepare_audio_bytes(
+    page: ft.Page,
+    content: bytes,
+    *,
+    timeout: float = GENERATED_AUDIO_TIMEOUT,
+) -> None:
+    """Install generated audio and wait until the browser reports it loaded."""
     if not isinstance(content, bytes) or not content:
         raise ValueError("pronunciation audio must be nonempty bytes")
     audio = ensure_audio(page)
-    audio.src = content
-    audio.update()
-    await audio.play()
+    loaded = asyncio.Event()
+    previous_on_loaded = audio.on_loaded
+    deadline = asyncio.get_running_loop().time() + timeout
+
+    def on_loaded(event=None) -> None:
+        loaded.set()
+
+    async def apply_source(source: str | bytes) -> None:
+        loaded.clear()
+        audio.src = source
+        audio.update()
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("audio source load timed out")
+        await asyncio.wait_for(loaded.wait(), timeout=remaining)
+
+    audio.on_loaded = on_loaded
+    try:
+        # A prior timed-out byte load will not emit a second loaded event for
+        # byte-equal content. Force a real source transition before retrying.
+        if isinstance(audio.src, bytes):
+            await apply_source(PLACEHOLDER_SRC)
+        await apply_source(content)
+    finally:
+        if audio.on_loaded is on_loaded:
+            audio.on_loaded = previous_on_loaded
+            audio.update()
+
+
+async def play_prepared_audio(
+    page: ft.Page,
+    *,
+    timeout: float = GENERATED_AUDIO_TIMEOUT,
+) -> None:
+    """Play an already-loaded source with a bounded Flet client invocation."""
+    audio = ensure_audio(page)
+    # Audio.play() in pinned flet-audio 0.86.5 does not expose the underlying
+    # invoke timeout. Supplying it here lets Flet clean its pending call on a
+    # browser that never answers instead of stranding the UI indefinitely.
+    await audio._invoke_method(
+        method_name="play",
+        arguments={"position": 0},
+        timeout=timeout,
+    )
 
 
 def launch_url(url: str) -> None:
