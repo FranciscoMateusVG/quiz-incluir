@@ -193,7 +193,18 @@ def VocabularyScreen(
                     return
                 audio_bytes.current = content
             if not audio_prepared.current:
-                await prepare_audio_bytes(page, content)
+                prepared = await prepare_audio_bytes(
+                    page,
+                    content,
+                    is_current=lambda: (
+                        owner == audio_owner.current
+                        and controller.session_is_current(
+                            session_token, session_generation
+                        )
+                    ),
+                )
+                if not prepared:
+                    return
                 if (
                     owner != audio_owner.current
                     or not controller.session_is_current(

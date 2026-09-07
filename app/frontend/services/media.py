@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import re
 import urllib.parse
+from collections.abc import Callable
 
 import flet as ft
 from flet_audio import Audio
@@ -101,10 +102,12 @@ async def prepare_audio_bytes(
     content: bytes,
     *,
     timeout: float = GENERATED_AUDIO_TIMEOUT,
-) -> None:
+    is_current: Callable[[], bool] | None = None,
+) -> bool:
     """Install generated audio and wait until the browser reports it loaded."""
     if not isinstance(content, bytes) or not content:
         raise ValueError("pronunciation audio must be nonempty bytes")
+    is_current = is_current or (lambda: True)
     audio = ensure_audio(page)
     loaded = asyncio.Event()
     previous_on_loaded = audio.on_loaded
@@ -113,7 +116,9 @@ async def prepare_audio_bytes(
     def on_loaded(event=None) -> None:
         loaded.set()
 
-    async def apply_source(source: str | bytes) -> None:
+    async def apply_source(source: str | bytes) -> bool:
+        if not is_current():
+            return False
         loaded.clear()
         audio.src = source
         audio.update()
@@ -121,14 +126,16 @@ async def prepare_audio_bytes(
         if remaining <= 0:
             raise TimeoutError("audio source load timed out")
         await asyncio.wait_for(loaded.wait(), timeout=remaining)
+        return is_current()
 
     audio.on_loaded = on_loaded
     try:
         # A prior timed-out byte load will not emit a second loaded event for
         # byte-equal content. Force a real source transition before retrying.
         if isinstance(audio.src, bytes):
-            await apply_source(PLACEHOLDER_SRC)
-        await apply_source(content)
+            if not await apply_source(PLACEHOLDER_SRC):
+                return False
+        return await apply_source(content)
     finally:
         if audio.on_loaded is on_loaded:
             audio.on_loaded = previous_on_loaded

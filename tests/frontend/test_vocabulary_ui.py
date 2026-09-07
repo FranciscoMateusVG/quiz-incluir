@@ -432,8 +432,9 @@ def test_pronunciation_is_user_initiated_and_replays_cached_bytes(
             provider_calls.append("pronunciation")
             return b"ID3-pronunciation"
 
-    async def prepare(page, content: bytes) -> None:
+    async def prepare(page, content: bytes, *, is_current) -> bool:
         prepared.append(content)
+        return is_current()
 
     async def play(page, *, timeout: float) -> None:
         plays.append(timeout)
@@ -513,8 +514,8 @@ def test_vocabulary_play_timeout_reenables_retry_without_refetching(
             provider_calls.append("pronunciation")
             return b"ID3-pronunciation"
 
-    async def prepare(page, content: bytes) -> None:
-        return None
+    async def prepare(page, content: bytes, *, is_current) -> bool:
+        return is_current()
 
     async def timeout(page, *, timeout: float) -> None:
         nonlocal play_calls
@@ -846,6 +847,61 @@ def test_generated_audio_prepare_retry_forces_a_source_transition(
 
     assert audio.src == b"ID3-audio"
     assert audio.byte_updates == 2
+
+
+def test_stale_audio_prepare_cannot_overwrite_a_newer_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    updates: list[tuple[str | bytes, object]] = []
+
+    class Audio:
+        src: str | bytes = b"old-audio"
+        on_loaded = None
+
+        def update(self):
+            if self.on_loaded is not None:
+                updates.append((self.src, self.on_loaded))
+
+    audio = Audio()
+    old_is_current = True
+    monkeypatch.setattr(media_service, "ensure_audio", lambda page: audio)
+
+    async def scenario() -> tuple[bool, bool]:
+        nonlocal old_is_current
+        old = asyncio.create_task(
+            media_service.prepare_audio_bytes(
+                object(),
+                b"old-audio",
+                timeout=0.5,
+                is_current=lambda: old_is_current,
+            )
+        )
+        while len(updates) < 1:
+            await asyncio.sleep(0)
+
+        old_is_current = False
+        newer = asyncio.create_task(
+            media_service.prepare_audio_bytes(
+                object(),
+                b"new-audio",
+                timeout=0.5,
+                is_current=lambda: True,
+            )
+        )
+        while len(updates) < 2:
+            await asyncio.sleep(0)
+
+        updates[1][1](None)
+        newer_result = await newer
+        updates[0][1](None)
+        old_result = await old
+        return old_result, newer_result
+
+    old_result, newer_result = asyncio.run(scenario())
+
+    assert old_result is False
+    assert newer_result is True
+    assert audio.src == b"new-audio"
 
 
 def test_vocabulary_navigation_is_available_to_student_and_admin(
