@@ -172,6 +172,16 @@ class _NeverReturningDailyBudget(_FakeBudget):
         await asyncio.Event().wait()
 
 
+class _DelayedDailyBudget(_FakeBudget):
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+
+    async def consume_daily(self, user_id: UUID, operation: str) -> None:
+        self.daily_calls.append((user_id, operation))
+        await asyncio.sleep(self.delay)
+
+
 class _UnavailableReservationBudget(_FakeBudget):
     async def reserve(self, operation: str, amount: int) -> object:
         self.reserve_calls.append((operation, amount))
@@ -221,6 +231,27 @@ class _TranslationProvider(_FakeProvider):
         return vocabulary_provider.ProviderLookupResult(
             translation=self.translation,
             definition="A safe definition.",
+            input_tokens=8,
+            output_tokens=12,
+        )
+
+
+class _DelayedProvider(_FakeProvider):
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.cancelled = asyncio.Event()
+
+    async def lookup(self, text: str):
+        self.lookup_calls.append(text)
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return vocabulary_provider.ProviderLookupResult(
+            translation="house",
+            definition="A building where people live.",
             input_tokens=8,
             output_tokens=12,
         )
@@ -843,6 +874,41 @@ class VocabularyServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.lookup_calls, [])
         self.assertEqual(budget.reserve_calls, [])
         self.assertEqual(grants.create_calls, [])
+
+    async def test_lookup_flight_cannot_outlive_leader_absolute_deadline(self) -> None:
+        provider = _DelayedProvider(delay=0.03)
+        budget = _DelayedDailyBudget(delay=0.04)
+        grants = _FakeGrants()
+        cache = vocabulary_core.VocabularyCache()
+        service = self._service(
+            provider=provider,
+            budget=budget,
+            grants=grants,
+            cache=cache,
+        )
+
+        with (
+            patch.object(
+                vocabulary_core,
+                "VOCABULARY_JOURNEY_DEADLINE_SECONDS",
+                0.05,
+            ),
+            self.assertRaises(vocabulary_core.VocabularyServiceError) as raised,
+        ):
+            await service.lookup(uuid4(), "casa")
+
+        self.assertEqual(
+            raised.exception.code,
+            VocabularyErrorCode.PROVIDER_UNAVAILABLE,
+        )
+        await asyncio.wait_for(provider.cancelled.wait(), timeout=0.25)
+        await asyncio.sleep(0)
+        self.assertEqual(provider.lookup_calls, ["casa"])
+        self.assertEqual(len(budget.reserve_calls), 1)
+        self.assertEqual(budget.commit_calls, [])
+        self.assertEqual(budget.release_calls, [])
+        self.assertIsNone(cache.get("casa"))
+        self.assertEqual(service._flights, {})
 
     async def test_complete_pronunciation_journey_times_out_before_provider(
         self,
