@@ -1,8 +1,17 @@
-from datetime import datetime, UTC
+from datetime import date, datetime, UTC
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, JSON, DateTime, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    JSON,
+    String,
+    UniqueConstraint,
+)
 from sqlmodel import Field, Relationship, SQLModel
 
 from quiz_shared.enums import (
@@ -21,6 +30,10 @@ __all__ = [
     "QuestionType",
     "QuizCategory",
     "UserRole",
+    "AIMonthlyBudget",
+    "AIBudgetReservation",
+    "AIDailyUsage",
+    "VocabularyLookupGrant",
     "User",
     "QuizQuestion",
     "Quiz",
@@ -44,10 +57,181 @@ def _tz_datetime_column(*, onupdate: bool = False) -> Column:
     bound value is tz-aware (as our ``datetime.now(UTC)`` defaults are). Using
     ``DateTime(timezone=True)`` keeps every stored timestamp consistent.
     """
-    kwargs: dict[str, Any] = {"default": _utcnow}
+    kwargs: dict[str, Any] = {"default": _utcnow, "nullable": False}
     if onupdate:
         kwargs["onupdate"] = _utcnow
     return Column(DateTime(timezone=True), **kwargs)
+
+
+# -------------------------
+# AI spend budget
+# -------------------------
+
+
+class AIMonthlyBudget(SQLModel, table=True):
+    __tablename__ = "ai_monthly_budgets"
+    __table_args__ = (
+        CheckConstraint(
+            "EXTRACT(DAY FROM month_start) = 1",
+            name="ck_ai_monthly_budgets_month_starts_on_day_one",
+        ),
+        CheckConstraint(
+            "limit_microusd BETWEEN 1 AND 5000000",
+            name="ck_ai_monthly_budgets_limit_range",
+        ),
+        CheckConstraint(
+            "committed_microusd >= 0",
+            name="ck_ai_monthly_budgets_committed_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_microusd >= 0",
+            name="ck_ai_monthly_budgets_reserved_nonnegative",
+        ),
+        CheckConstraint(
+            "committed_microusd + reserved_microusd <= limit_microusd",
+            name="ck_ai_monthly_budgets_within_limit",
+        ),
+    )
+
+    month_start: date = Field(primary_key=True)
+    limit_microusd: int = Field(sa_column=Column(BigInteger, nullable=False))
+    committed_microusd: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+    )
+    reserved_microusd: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+    )
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(onupdate=True),
+    )
+
+
+class AIBudgetReservation(SQLModel, table=True):
+    __tablename__ = "ai_budget_reservations"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('lookup', 'pronunciation')",
+            name="ck_ai_budget_reservations_operation",
+        ),
+        CheckConstraint(
+            "state IN ('reserved', 'committed', 'released')",
+            name="ck_ai_budget_reservations_state",
+        ),
+        CheckConstraint(
+            "reserved_microusd > 0",
+            name="ck_ai_budget_reservations_reserved_positive",
+        ),
+        CheckConstraint(
+            "committed_microusd IS NULL OR committed_microusd >= 0",
+            name="ck_ai_budget_reservations_committed_nonnegative",
+        ),
+        CheckConstraint(
+            "(state = 'committed' AND committed_microusd IS NOT NULL "
+            "AND committed_microusd <= reserved_microusd) OR "
+            "(state IN ('reserved', 'released') AND committed_microusd IS NULL)",
+            name="ck_ai_budget_reservations_state_amount_coherent",
+        ),
+        Index(
+            "ix_ai_budget_reservations_month_state",
+            "month_start",
+            "state",
+        ),
+        Index(
+            "ix_ai_budget_reservations_created_at",
+            "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    month_start: date = Field(foreign_key="ai_monthly_budgets.month_start")
+    operation: str = Field(sa_column=Column(String(32), nullable=False))
+    state: str = Field(
+        default="reserved",
+        sa_column=Column(String(16), nullable=False, default="reserved"),
+    )
+    reserved_microusd: int = Field(sa_column=Column(BigInteger, nullable=False))
+    committed_microusd: int | None = Field(
+        default=None,
+        sa_column=Column(BigInteger, nullable=True),
+    )
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(onupdate=True),
+    )
+
+
+class AIDailyUsage(SQLModel, table=True):
+    __tablename__ = "ai_daily_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('lookup', 'pronunciation')",
+            name="ck_ai_daily_usage_operation",
+        ),
+        CheckConstraint(
+            "count >= 0",
+            name="ck_ai_daily_usage_count_nonnegative",
+        ),
+    )
+
+    usage_date: date = Field(primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", primary_key=True)
+    operation: str = Field(
+        sa_column=Column(String(32), primary_key=True, nullable=False),
+    )
+    count: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, default=0),
+    )
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(onupdate=True),
+    )
+
+
+class VocabularyLookupGrant(SQLModel, table=True):
+    __tablename__ = "vocabulary_lookup_grants"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(translation) BETWEEN 1 AND 120",
+            name="ck_vocabulary_lookup_grants_translation_length",
+        ),
+        Index(
+            "ix_vocabulary_lookup_grants_expires_at",
+            "expires_at",
+        ),
+        Index(
+            "ix_vocabulary_lookup_grants_user_id_id",
+            "user_id",
+            "id",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id")
+    translation: str = Field(sa_column=Column(String(120), nullable=False))
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_tz_datetime_column(),
+    )
+
 
 # -------------------------
 # Users

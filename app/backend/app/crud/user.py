@@ -1,10 +1,9 @@
-from fastapi import HTTPException, status
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.core.monorepo_auth import VerifiedIdentityEmail
 from app.crud.base import CRUDBase
-from app.models import User
+from app.models import CourseLevel, User, UserRole
 from app.schemas.user import UserCreate, UserUpdate
 
 
@@ -13,7 +12,9 @@ class CRUDUser(CRUDBase[User, UserCreate, UserUpdate]):
         result = await db.exec(select(User).where(User.email == email))
         return result.first()
 
-    async def get_or_create_by_email(self, db: AsyncSession, email: str) -> User:
+    async def get_or_create_from_verified_email(
+        self, db: AsyncSession, email: VerifiedIdentityEmail
+    ) -> User:
         """Mirror a verified monorepo identity into a local shadow ``User`` row.
 
         Only called after the monorepo has already confirmed the email is a
@@ -22,13 +23,15 @@ class CRUDUser(CRUDBase[User, UserCreate, UserUpdate]):
         existing = await self.get_by_email(db, email)
         if existing is not None:
             return existing
-        try:
-            return await self.create(db, UserCreate(email=email))
-        except ValidationError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Please enter a valid email address",
-            )
+        user = User(
+            email=str(email),
+            level=CourseLevel.B1,
+            role=UserRole.STUDENT,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        return user
 
 
 user = CRUDUser(User)

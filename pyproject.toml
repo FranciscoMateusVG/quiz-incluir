@@ -30,4 +30,6 @@ members = ["app/backend", "app/frontend", "app/shared", "app/ai"]
 dev = [
     "ipykernel>=7.1.0",
     "harlequin[postgres]>=2.5.2",
+    "pytest==8.4.2",
+    "playwright==1.62.0",
 ]
