@@ -10,7 +10,6 @@ requires-python = ">=3.12"
 # only what it needs (see render.yaml).
 dependencies = [
     "quiz-backend",
-    "quiz-frontend",
     "quiz-shared",
 ]
 
@@ -19,12 +18,11 @@ package = false
 
 [tool.uv.sources]
 quiz-backend = { workspace = true }
-quiz-frontend = { workspace = true }
 quiz-shared = { workspace = true }
 quiz-ai = { workspace = true }
 
 [tool.uv.workspace]
-members = ["app/backend", "app/frontend", "app/shared", "app/ai"]
+members = ["app/backend", "app/shared", "app/ai"]
 
 [dependency-groups]
 dev = [

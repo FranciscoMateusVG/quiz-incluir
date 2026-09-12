@@ -2,6 +2,8 @@
 .venv
 __pycache__
 **/__pycache__
-.flet
 .env
 app/backend/static
+app/web/node_modules
+app/web/dist
+monorepo-incluir

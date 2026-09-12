@@ -1,1 +1,0 @@
-"""Answer widgets package: one Strategy per question type."""

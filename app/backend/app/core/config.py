@@ -63,3 +63,18 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+# The monorepo's own e2e seed script (apps/hono-app/scripts/seed-e2e.ts)
+# deliberately uses `@*.test` addresses — the RFC 2606 TLD reserved exactly
+# for this purpose, so fixtures can never collide with a real domain.
+# `email_validator` (which backs every `EmailStr` field here, including
+# UserRead/AdminAttemptRow on read and UserCreate on write) rejects reserved
+# TLDs by default, which meant `get_or_create_by_email` 422'd for every
+# seeded account the moment a real login mirrored one in.
+#
+# This only ever relaxes validation for `.test`/`.example`/`.invalid`/
+# `.localhost` — no real account can have one of those, so it's safe to leave
+# on unconditionally rather than gating it behind an env var.
+import email_validator  # noqa: E402
+
+email_validator.TEST_ENVIRONMENT = True

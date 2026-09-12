@@ -1,1 +1,0 @@
-"""API domain models (pydantic mirrors of the backend schemas)."""

@@ -179,6 +179,32 @@ HANDLERS: dict[QuestionType, QuestionTypeHandler] = {
 }
 
 
+# Config keys that give away the answer. Everything here is needed by grading
+# (which reads the ORM row directly) and by the PDF report, but must not be
+# handed to a student before they answer.
+ANSWER_KEY_FIELDS = frozenset(
+    {
+        "correct_index",  # multiple_choice
+        "correct_indices",  # multiple_selection
+        "answer",  # true_false
+        "accepted_answers",  # short_text
+        "explanations",  # multiple choice/selection, per option
+    }
+)
+
+
+def public_config(config: dict | None) -> dict:
+    """``config`` with the answer key removed.
+
+    ``GET /api/v1/questions/{id}`` is public, and returned the whole config —
+    so the correct answer and its explanations reached the browser before the
+    question was answered. Only ``options`` is actually needed to render a
+    question, and grading compares option *text* rather than an index, so
+    dropping these keys costs the student UI nothing.
+    """
+    return {k: v for k, v in (config or {}).items() if k not in ANSWER_KEY_FIELDS}
+
+
 def parse_config(question: Question) -> BaseModel | None:
     """Validate ``question.config`` against its type's shape.
 

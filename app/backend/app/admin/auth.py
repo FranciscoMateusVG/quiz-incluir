@@ -1,8 +1,10 @@
-"""Login gate for the SQLAdmin panel.
+"""Login gate for the SQLAdmin panel, mounted at ``/backoffice``.
 
-Independent of the app's own user auth (which is passwordless — any email
-gets a JWT, see ``app/api/routes/auth.py``) since that isn't a safe gate for
-an admin surface. Credentials come from ``settings.ADMIN_USERNAME`` /
+Deliberately independent of the app's own user auth, which delegates to the
+Programa Incluir monorepo's BetterAuth service (see
+``app/core/monorepo_auth.py``) and grants admin rights from a ``users.role``
+column that is only ever set by hand — not a gate this surface should depend
+on. Credentials come from ``settings.ADMIN_USERNAME`` /
 ``settings.ADMIN_PASSWORD`` and the session is a signed cookie via
 Starlette's ``SessionMiddleware`` (registered in ``main.py``).
 """

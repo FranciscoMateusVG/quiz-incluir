@@ -4,7 +4,7 @@
 # time — do NOT add them here. Local dev keeps using compose.yaml (unchanged).
 #
 # Public entrypoint: quiz-incluir-backend-e17b8a (port 8000). It serves both
-# the API and the Flet UI, mounted onto the same FastAPI app object
+# the API and the React SPA, mounted onto the same FastAPI app object
 # (app/backend/main.py) — there's no separate frontend service anymore.
 #
 # Required Dokploy-managed env vars (set in the Dokploy environment panel):
