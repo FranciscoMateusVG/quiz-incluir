@@ -181,15 +181,46 @@ def resolve_auth_request_client_ip(
 
 
 class PreserveOriginalPeerMiddleware:
-    """Record the socket peer before any application-owned scope rewrite."""
+    """Record the socket peer and apply the narrowly trusted request scheme.
 
-    def __init__(self, app: ASGIApp) -> None:
+    Uvicorn's generic proxy-header rewriting stays disabled so the application
+    can make both decisions from the untouched socket peer.  Only the
+    configured public proxy may supply one exact ``X-Forwarded-Proto`` value;
+    every other header shape leaves the transport scheme unchanged.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        trusted_proxy_cidrs: Iterable[IpNetwork] = (),
+    ) -> None:
         self.app = app
+        self.trusted_proxy_cidrs = tuple(trusted_proxy_cidrs)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in {"http", "websocket"}:
             scope = dict(scope)
             scope[ORIGINAL_CLIENT_SCOPE_KEY] = scope.get("client")
+            if scope["type"] == "http":
+                peer = scope.get("client")
+                peer_ip = (
+                    peer[0]
+                    if isinstance(peer, (tuple, list))
+                    and len(peer) == 2
+                    and isinstance(peer[0], str)
+                    and isinstance(peer[1], int)
+                    else None
+                )
+                parsed_peer = _parse_exact_ip(peer_ip)
+                forwarded_proto = _single_scope_header(
+                    scope, b"x-forwarded-proto"
+                )
+                if (
+                    parsed_peer is not None
+                    and _is_trusted(parsed_peer, self.trusted_proxy_cidrs)
+                    and forwarded_proto in {"http", "https"}
+                ):
+                    scope["scheme"] = forwarded_proto
         await self.app(scope, receive, send)
 
 

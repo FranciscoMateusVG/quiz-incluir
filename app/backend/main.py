@@ -33,7 +33,10 @@ app = FastAPI(
 )
 
 app.add_exception_handler(AuthAPIError, auth_api_error_handler)
-app.add_middleware(PreserveOriginalPeerMiddleware)
+app.add_middleware(
+    PreserveOriginalPeerMiddleware,
+    trusted_proxy_cidrs=settings.trusted_proxy_networks,
+)
 
 # Set all CORS enabled origins
 if settings.ALL_CORS_ORIGINS:

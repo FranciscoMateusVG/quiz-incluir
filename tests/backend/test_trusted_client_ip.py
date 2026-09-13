@@ -364,6 +364,98 @@ class MiddlewareTests(unittest.TestCase):
         self.assertEqual(captured[ORIGINAL_CLIENT_SCOPE_KEY], ("198.51.100.90", 4567))
         self.assertNotIn(ORIGINAL_CLIENT_SCOPE_KEY, original_scope)
 
+    def test_trusted_proxy_sets_exact_forwarded_http_scheme(self) -> None:
+        trusted = parse_trusted_proxy_cidrs("10.24.0.7/32")
+        for original_scheme, forwarded_scheme in (
+            ("http", "https"),
+            ("https", "http"),
+        ):
+            with self.subTest(
+                original_scheme=original_scheme,
+                forwarded_scheme=forwarded_scheme,
+            ):
+                original_scope: dict[str, Any] = {
+                    "type": "http",
+                    "scheme": original_scheme,
+                    "client": ("10.24.0.7", 4567),
+                    "headers": [
+                        (b"x-forwarded-proto", forwarded_scheme.encode("ascii"))
+                    ],
+                }
+                captured: dict[str, Any] = {}
+
+                async def inner(
+                    scope: dict[str, Any], receive: Any, send: Any
+                ) -> None:
+                    captured.update(scope)
+
+                async def receive() -> dict[str, Any]:
+                    return {"type": "http.disconnect"}
+
+                async def send(message: dict[str, Any]) -> None:
+                    del message
+
+                asyncio.run(
+                    PreserveOriginalPeerMiddleware(inner, trusted)(
+                        original_scope, receive, send
+                    )
+                )
+
+                self.assertEqual(captured["scheme"], forwarded_scheme)
+                self.assertEqual(
+                    captured[ORIGINAL_CLIENT_SCOPE_KEY], ("10.24.0.7", 4567)
+                )
+                self.assertEqual(captured["client"], ("10.24.0.7", 4567))
+                self.assertEqual(original_scope["scheme"], original_scheme)
+
+    def test_untrusted_or_invalid_forwarded_proto_keeps_original_scheme(self) -> None:
+        trusted = parse_trusted_proxy_cidrs("10.24.0.7/32")
+        cases = (
+            ("198.51.100.90", [(b"x-forwarded-proto", b"https")]),
+            ("10.24.0.7", []),
+            ("10.24.0.7", [(b"x-forwarded-proto", b"HTTPS")]),
+            ("10.24.0.7", [(b"x-forwarded-proto", b" https")]),
+            ("10.24.0.7", [(b"x-forwarded-proto", b"https,http")]),
+            (
+                "10.24.0.7",
+                [
+                    (b"x-forwarded-proto", b"https"),
+                    (b"x-forwarded-proto", b"http"),
+                ],
+            ),
+            ("not-an-ip", [(b"x-forwarded-proto", b"https")]),
+        )
+        for peer, headers in cases:
+            with self.subTest(peer=peer, headers=headers):
+                captured: dict[str, Any] = {}
+                original_scope: dict[str, Any] = {
+                    "type": "http",
+                    "scheme": "http",
+                    "client": (peer, 4567),
+                    "headers": headers,
+                }
+
+                async def inner(
+                    scope: dict[str, Any], receive: Any, send: Any
+                ) -> None:
+                    captured.update(scope)
+
+                async def receive() -> dict[str, Any]:
+                    return {"type": "http.disconnect"}
+
+                async def send(message: dict[str, Any]) -> None:
+                    del message
+
+                asyncio.run(
+                    PreserveOriginalPeerMiddleware(inner, trusted)(
+                        original_scope, receive, send
+                    )
+                )
+
+                self.assertEqual(captured["scheme"], "http")
+                self.assertEqual(captured["client"], (peer, 4567))
+                self.assertEqual(captured[ORIGINAL_CLIENT_SCOPE_KEY], (peer, 4567))
+
     def test_flet_websocket_rewrites_client_but_preserves_raw_peer(self) -> None:
         captured: dict[str, Any] = {}
 
