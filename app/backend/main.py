@@ -6,6 +6,7 @@ from sqladmin import Admin
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.admin.auth import AdminAuth
 from app.admin.views import ALL_VIEWS
@@ -42,6 +43,19 @@ if settings.ALL_CORS_ORIGINS:
 
 # Session cookies for the SQLAdmin login below.
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+
+# Production (docker-compose.prod.yml) terminates TLS at Traefik and proxies
+# plain HTTP to this container over the Dokploy-managed network, so the peer
+# address Uvicorn sees is Traefik's, never 127.0.0.1 — Uvicorn's own
+# `--forwarded-allow-ips` default therefore never trusts it. Without this,
+# request.url.scheme (and anything url_for() builds from it, e.g. SQLAdmin's
+# static asset links) stays "http" even on an HTTPS request, which browsers
+# then block as mixed content. `trusted_hosts="*"` is the standard fix when
+# the proxy's IP isn't fixed/known ahead of time (Uvicorn's own deployment
+# docs recommend it for exactly this container-behind-reverse-proxy case);
+# added last so it's the outermost middleware and rewrites scope before
+# anything else — including SessionMiddleware above — reads it.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(api_router, prefix=API_V1_STR)
 
