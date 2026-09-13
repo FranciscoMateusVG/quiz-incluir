@@ -2,11 +2,84 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+
 import httpx
 from fastapi import FastAPI
+from sqladmin import Admin
+
+from app.admin.auth import AdminAuth
+from app.core.client_ip import (
+    PreserveOriginalPeerMiddleware,
+    parse_trusted_proxy_cidrs,
+)
+from app.core.database import engine
 from app.core.spa import SpaStaticFiles
 
+
 class SpaServingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sqladmin_urls_use_only_a_trusted_forwarded_scheme(self):
+        app = FastAPI(openapi_url=None)
+        Admin(
+            app,
+            engine,
+            base_url="/backoffice",
+            authentication_backend=AdminAuth(secret_key="test-only-secret"),
+        )
+
+        trusted_app = PreserveOriginalPeerMiddleware(
+            app, parse_trusted_proxy_cidrs("10.24.0.7/32")
+        )
+        transport = httpx.ASGITransport(
+            app=trusted_app, client=("10.24.0.7", 43123)
+        )
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://quiz.test"
+        ) as client:
+            response = await client.get(
+                "/backoffice/login", headers={"x-forwarded-proto": "https"}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(
+                'href="https://quiz.test/backoffice/statics/css/', response.text
+            )
+            self.assertIn(
+                'action="https://quiz.test/backoffice/login"', response.text
+            )
+            self.assertNotIn("http://quiz.test/backoffice", response.text)
+
+            redirect = await client.get(
+                "/backoffice/",
+                headers={"x-forwarded-proto": "https"},
+                follow_redirects=False,
+            )
+            self.assertEqual(redirect.status_code, 302)
+            self.assertEqual(
+                redirect.headers["location"],
+                "https://quiz.test/backoffice/login",
+            )
+
+        untrusted_transport = httpx.ASGITransport(
+            app=trusted_app, client=("198.51.100.90", 43123)
+        )
+        async with httpx.AsyncClient(
+            transport=untrusted_transport, base_url="http://quiz.test"
+        ) as client:
+            response = await client.get(
+                "/backoffice/login",
+                headers={
+                    "x-forwarded-proto": "https",
+                    "x-forwarded-host": "spoofed.invalid",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(
+                'href="http://quiz.test/backoffice/statics/css/', response.text
+            )
+            self.assertIn(
+                'action="http://quiz.test/backoffice/login"', response.text
+            )
+            self.assertNotIn("spoofed.invalid", response.text)
+
     async def test_deep_routes_assets_and_reserved_paths(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -28,12 +101,21 @@ class SpaServingTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
         from app.api.auth_errors import AuthAPIError, auth_api_error_handler
         from app.core.client_ip import PreserveOriginalPeerMiddleware
+        from app.core.config import settings
         root = Path(__file__).resolve().parents[2]
         spec = importlib.util.spec_from_file_location('quiz_react_backend_main', root / 'app/backend/main.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertIs(module.app.exception_handlers[AuthAPIError], auth_api_error_handler)
-        self.assertTrue(any(item.cls is PreserveOriginalPeerMiddleware for item in module.app.user_middleware))
+        peer_middleware = next(
+            item
+            for item in module.app.user_middleware
+            if item.cls is PreserveOriginalPeerMiddleware
+        )
+        self.assertEqual(
+            tuple(peer_middleware.kwargs["trusted_proxy_cidrs"]),
+            settings.trusted_proxy_networks,
+        )
         self.assertFalse(hasattr(module, 'flet_app'))
         with patch.object(module, 'init_db', new=AsyncMock()) as initialize:
             async with module.app.router.lifespan_context(module.app):
