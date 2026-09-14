@@ -8,6 +8,9 @@ to set the private relay header merely by forwarding a loopback-looking hop.
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 import unittest
 from collections.abc import Iterable
 from ipaddress import ip_network
@@ -15,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
+from pydantic import ValidationError
 
 from app.core.client_ip import (
     ORIGINAL_CLIENT_SCOPE_KEY,
@@ -80,6 +84,17 @@ class CanonicalizeIpTests(unittest.TestCase):
 
 
 class TrustedProxyConfigurationTests(unittest.TestCase):
+    @staticmethod
+    def _valid_settings(**overrides: Any) -> Settings:
+        values: dict[str, Any] = {
+            "SECRET_KEY": "test-only-session-signing-key-32-bytes",
+            "ADMIN_USERNAME": "test-backoffice-admin",
+            "ADMIN_PASSWORD": "test-only-backoffice-password",
+            "ALL_CORS_ORIGINS": [],
+        }
+        values.update(overrides)
+        return Settings(_env_file=None, **values)
+
     def test_parses_narrow_ipv4_and_ipv6_networks(self) -> None:
         self.assertEqual(
             parse_trusted_proxy_cidrs("10.24.0.7/32, 2001:db8:10::7/128"),
@@ -104,8 +119,7 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
                     parse_trusted_proxy_cidrs(value)
 
     def test_settings_empty_proxy_allowlist_trusts_nobody(self) -> None:
-        configured = Settings(
-            _env_file=None,
+        configured = self._valid_settings(
             MONOREPO_AUTH_URL="http://hono-app:3003",
             TRUSTED_PROXY_CIDRS="",
         )
@@ -118,8 +132,7 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
             "http://127.0.0.1:4503",
         ):
             with self.subTest(origin=origin):
-                configured = Settings(
-                    _env_file=None,
+                configured = self._valid_settings(
                     MONOREPO_AUTH_URL=origin,
                     TRUSTED_PROXY_CIDRS="",
                 )
@@ -149,11 +162,77 @@ class TrustedProxyConfigurationTests(unittest.TestCase):
             "http://hono-app:3003#fragment",
         ):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
-                Settings(
-                    _env_file=None,
+                self._valid_settings(
                     MONOREPO_AUTH_URL=origin,
                     TRUSTED_PROXY_CIDRS="",
                 )
+
+    def test_admin_credentials_and_signing_key_are_required_before_startup(self) -> None:
+        backend = Path(__file__).resolve().parents[2] / "app" / "backend"
+        environment = os.environ.copy()
+        for name in ("SECRET_KEY", "ADMIN_USERNAME", "ADMIN_PASSWORD"):
+            environment.pop(name, None)
+
+        result = subprocess.run(
+            [sys.executable, "-c", "import main"],
+            cwd=backend,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SECRET_KEY", result.stderr)
+        self.assertIn("ADMIN_USERNAME", result.stderr)
+        self.assertIn("ADMIN_PASSWORD", result.stderr)
+
+    def test_admin_credentials_reject_blanks_bounds_and_shipped_placeholders(self) -> None:
+        invalid_values = (
+            ("SECRET_KEY", ""),
+            ("SECRET_KEY", "your-secret-key-change-in-production"),
+            ("SECRET_KEY", "x" * 31),
+            ("SECRET_KEY", "x" * 257),
+            ("ADMIN_USERNAME", ""),
+            ("ADMIN_USERNAME", "admin\noperator"),
+            ("ADMIN_USERNAME", "x" * 129),
+            ("ADMIN_PASSWORD", ""),
+            ("ADMIN_PASSWORD", "change-me"),
+            ("ADMIN_PASSWORD", "x" * 11),
+            ("ADMIN_PASSWORD", "x" * 257),
+        )
+        for field, value in invalid_values:
+            with self.subTest(field=field, value_length=len(value)):
+                with self.assertRaises(ValidationError):
+                    self._valid_settings(**{field: value})
+
+        # "admin" is an identifier, not a secret. It is safe when explicitly
+        # configured; the removed source fallback was the ambiguity defect.
+        self.assertEqual(
+            self._valid_settings(ADMIN_USERNAME="admin").ADMIN_USERNAME,
+            "admin",
+        )
+
+    def test_cors_defaults_to_same_origin_and_accepts_exact_origins_only(self) -> None:
+        self.assertEqual(self._valid_settings().ALL_CORS_ORIGINS, [])
+        origins = ["https://quiz.programaincluir.org", "http://localhost:5173"]
+        self.assertEqual(
+            self._valid_settings(ALL_CORS_ORIGINS=origins).ALL_CORS_ORIGINS,
+            origins,
+        )
+
+        invalid_lists = (
+            ["*"],
+            ["https://quiz.programaincluir.org/"],
+            ["https://user@example.com"],
+            ["https://quiz.programaincluir.org?source=test"],
+            [" https://quiz.programaincluir.org"],
+            ["https://quiz.programaincluir.org"] * 2,
+            [f"https://origin-{index}.example" for index in range(9)],
+        )
+        for origins in invalid_lists:
+            with self.subTest(origins=origins), self.assertRaises(ValidationError):
+                self._valid_settings(ALL_CORS_ORIGINS=origins)
 
 class ResolveClientIpTests(unittest.TestCase):
     def setUp(self) -> None:

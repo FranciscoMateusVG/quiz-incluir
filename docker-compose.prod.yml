@@ -17,9 +17,9 @@
 #                        Required for per-client sign-in buckets in deployed environments.
 #                        Empty trusts no proxy and safely attributes requests to the socket
 #                        peer; broad or loopback CIDRs are rejected at application startup.
-#   ADMIN_USERNAME     — SQLAdmin panel login username (must not be left unset — the
-#                        app falls back to an insecure hardcoded default otherwise).
-#   ADMIN_PASSWORD     — SQLAdmin panel login password (generate: openssl rand -hex 16).
+#   ADMIN_USERNAME     — required SQLAdmin panel login username (no source fallback).
+#   ADMIN_PASSWORD     — required SQLAdmin panel login password; known shipped
+#                        placeholders are rejected before the server starts.
 
 services:
   quiz-incluir-backend-e17b8a:

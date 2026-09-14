@@ -6,6 +6,8 @@ import unittest
 import httpx
 from fastapi import FastAPI
 from sqladmin import Admin
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.auth import AdminAuth
 from app.core.client_ip import (
@@ -116,6 +118,30 @@ class SpaServingTests(unittest.IsolatedAsyncioTestCase):
             tuple(peer_middleware.kwargs["trusted_proxy_cidrs"]),
             settings.trusted_proxy_networks,
         )
+        self.assertFalse(
+            any(item.cls is SessionMiddleware for item in module.app.user_middleware)
+        )
+        session_middleware = next(
+            item
+            for item in module.admin.admin.user_middleware
+            if item.cls is SessionMiddleware
+        )
+        self.assertEqual(
+            session_middleware.kwargs,
+            {
+                "secret_key": settings.SECRET_KEY,
+                "session_cookie": "quiz_backoffice_session",
+                "max_age": 1800,
+                "path": "/backoffice",
+                "same_site": "strict",
+                "https_only": True,
+            },
+        )
+        cors_middleware = next(
+            item for item in module.app.user_middleware if item.cls is CORSMiddleware
+        )
+        self.assertEqual(cors_middleware.kwargs["allow_origins"], ["https://quiz.test"])
+        self.assertTrue(cors_middleware.kwargs["allow_credentials"])
         self.assertFalse(hasattr(module, 'flet_app'))
         with patch.object(module, 'init_db', new=AsyncMock()) as initialize:
             async with module.app.router.lifespan_context(module.app):
@@ -126,3 +152,95 @@ class SpaServingTests(unittest.IsolatedAsyncioTestCase):
             response = await client.post('/api/v1/auth/token', json={})
             self.assertEqual(response.status_code, 422)
             self.assertEqual(response.json()['code'], 'invalid_request')
+
+    async def test_actual_backoffice_cookie_and_cors_boundaries(self):
+        import importlib.util
+        import os
+
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location(
+            "quiz_react_backend_security_boundaries",
+            root / "app/backend/main.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=module.app),
+            base_url="https://quiz.test",
+            follow_redirects=False,
+        ) as client:
+            login = await client.post(
+                "/backoffice/login",
+                data={
+                    "username": os.environ["ADMIN_USERNAME"],
+                    "password": os.environ["ADMIN_PASSWORD"],
+                },
+            )
+            self.assertEqual(login.status_code, 302)
+            cookie = login.headers["set-cookie"].lower()
+            self.assertIn("quiz_backoffice_session=", cookie)
+            self.assertIn("path=/backoffice", cookie)
+            self.assertIn("max-age=1800", cookie)
+            self.assertIn("httponly", cookie)
+            self.assertIn("samesite=strict", cookie)
+            self.assertIn("secure", cookie)
+
+            spa = await client.get("/quizzes")
+            api = await client.post("/api/v1/auth/token", json={})
+            self.assertNotIn("cookie", spa.request.headers)
+            self.assertNotIn("cookie", api.request.headers)
+            self.assertNotIn("set-cookie", spa.headers)
+            self.assertNotIn("set-cookie", api.headers)
+
+            logout = await client.get("/backoffice/logout")
+            self.assertEqual(logout.status_code, 302)
+            expired = logout.headers["set-cookie"].lower()
+            self.assertIn("quiz_backoffice_session=null", expired)
+            self.assertIn("path=/backoffice", expired)
+            self.assertIn("expires=thu, 01 jan 1970", expired)
+
+            allowed = await client.post(
+                "/api/v1/auth/token",
+                headers={"origin": "https://quiz.test"},
+                json={},
+            )
+            self.assertEqual(
+                allowed.headers.get("access-control-allow-origin"),
+                "https://quiz.test",
+            )
+            self.assertEqual(
+                allowed.headers.get("access-control-allow-credentials"), "true"
+            )
+
+            unlisted = await client.post(
+                "/api/v1/auth/token",
+                headers={"origin": "https://evil.example"},
+                json={},
+            )
+            self.assertNotIn("access-control-allow-origin", unlisted.headers)
+
+            preflight = await client.options(
+                "/api/v1/auth/token",
+                headers={
+                    "origin": "https://quiz.test",
+                    "access-control-request-method": "GET",
+                },
+            )
+            self.assertEqual(preflight.status_code, 200)
+            self.assertEqual(
+                preflight.headers.get("access-control-allow-origin"),
+                "https://quiz.test",
+            )
+
+            rejected_preflight = await client.options(
+                "/api/v1/auth/token",
+                headers={
+                    "origin": "https://evil.example",
+                    "access-control-request-method": "GET",
+                },
+            )
+            self.assertEqual(rejected_preflight.status_code, 400)
+            self.assertNotIn(
+                "access-control-allow-origin", rejected_preflight.headers
+            )
