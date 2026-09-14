@@ -1,3 +1,4 @@
+import { useWorkGuard } from "@/api/session";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -18,6 +19,7 @@ import { useAttemptStore } from "@/store/useAttemptStore";
 export function Question() {
   const { index } = useParams();
   const navigate = useNavigate();
+  const capture = useWorkGuard();
 
   const quiz = useAttemptStore((s) => s.quiz);
   const questions = useAttemptStore((s) => s.questions);
@@ -55,22 +57,34 @@ export function Question() {
 
   const submit = useMutation({
     mutationFn: async () => {
+      const currentWork = capture();
       if (!question || !attemptId) throw new Error("no active attempt");
 
       const response = toResponse(question.type, value);
-      if (!response) return { skipped: true as const };
+      if (!response) return { skipped: true as const, currentWork };
 
       await api.submitAnswer(attemptId, question.id, response);
+      currentWork();
       recordAnswer(question.id, response);
 
       if (current >= total - 1) {
         const result = await api.finishAttempt(attemptId);
+        currentWork();
         finishWith(result);
-        return { skipped: false as const, finished: true as const };
+        return {
+          skipped: false as const,
+          finished: true as const,
+          currentWork,
+        };
       }
-      return { skipped: false as const, finished: false as const };
+      return { skipped: false as const, finished: false as const, currentWork };
     },
     onSuccess: (outcome) => {
+      try {
+        outcome.currentWork();
+      } catch {
+        return;
+      }
       if (outcome.skipped) {
         toast.error(t.answerFirst);
         return;

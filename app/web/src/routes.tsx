@@ -1,9 +1,21 @@
-import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes } from "react-router";
+import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
 
 import * as api from "@/api/client";
-import { useCurrentUser } from "@/api/queries";
-import { getToken } from "@/api/token";
+import {
+  invalidateWork,
+  useSessionEpoch,
+  sessionEpoch,
+  setAuthNotice,
+} from "@/api/session";
+import { type UserRead } from "@/api/types";
+import { getToken, tokenRevision } from "@/api/token";
 import { Navbar } from "@/components/Navbar";
 import { Spinner } from "@/components/Spinner";
 import { LoginScreen } from "@/screens/LoginScreen";
@@ -38,31 +50,73 @@ function RequireAuth({
   adminOnly?: boolean;
   title?: string;
 }) {
-  const hasToken = Boolean(getToken());
-  const { data: user, isPending, error } = useCurrentUser(hasToken);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const epoch = useSessionEpoch();
+  const key = `${location.pathname}:${epoch}`;
+  const [validation, setValidation] = useState<{
+    key: string;
+    user?: UserRead;
+    failed?: boolean;
+  }>({ key: "" });
+  const [leaving, setLeaving] = useState(false);
   const reset = useAttemptStore((s) => s.reset);
-
-  if (!hasToken) return <Navigate to="/" replace />;
-  if (isPending) return <Spinner />;
-  // A rejected token is indistinguishable from no token for routing purposes.
-  if (error || !user) return <Navigate to="/" replace />;
+  useEffect(() => {
+    let current = true;
+    if (getToken() && !leaving)
+      void api.me().then(
+        (user) => {
+          if (current && sessionEpoch() === epoch) setValidation({ key, user });
+        },
+        () => {
+          if (current && sessionEpoch() === epoch)
+            setValidation({ key, failed: true });
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [key, epoch, leaving]);
+  if (!getToken()) return <Navigate to="/" replace />;
+  if (leaving) return <Spinner label="Encerrando sessão…" />;
+  if (validation.key !== key) return <Spinner label="Verificando acesso…" />;
+  if (validation.failed || !validation.user)
+    return (
+      <div role="alert" className="p-8">
+        <p>Não foi possível verificar sua sessão. Tente novamente.</p>
+        <button onClick={invalidateWork}>Tentar novamente</button>
+      </div>
+    );
+  const user = validation.user;
   if (adminOnly && user.role !== "admin")
     return <Navigate to="/quizzes" replace />;
-
-  const signOut = () => {
-    // Best-effort: revoke the session server-side, but don't let a slow or
-    // failed request delay clearing local state and navigating away — the
-    // token the SPA holds IS the real monorepo session, so this is what
-    // actually invalidates it rather than just discarding the local copy.
-    void api.logout();
+  const signOut = async () => {
+    if (leaving) return;
+    const token = getToken();
+    setLeaving(true);
+    invalidateWork();
+    const expected = tokenRevision();
+    let confirmed = false;
+    try {
+      await api.logout();
+      confirmed = true;
+    } catch {
+      /* disclose unconfirmed revocation */
+    }
+    if (tokenRevision() !== expected || getToken() !== token) return;
+    setAuthNotice(
+      confirmed
+        ? ""
+        : "Você saiu do Quiz, mas não foi possível confirmar o encerramento da sessão no servidor.",
+    );
     clearToken();
     reset();
-    window.location.assign("/");
+    void navigate("/", { replace: true });
   };
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Navbar title={title} user={user} onSignOut={signOut} />
+      <Navbar title={title} user={user} onSignOut={() => void signOut()} />
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col">
         <Suspense fallback={<Spinner />}>{children}</Suspense>
       </main>

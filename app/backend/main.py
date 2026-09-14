@@ -4,12 +4,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from sqladmin import Admin
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.admin.auth import AdminAuth
 from app.admin.views import ALL_VIEWS
+from app.api.auth_errors import AuthAPIError, auth_api_error_handler
+from app.core.client_ip import PreserveOriginalPeerMiddleware
 from app.api.main import api_router
 from app.core.config import settings
 from app.core.database import engine, init_db
@@ -17,6 +17,9 @@ from app.core.spa import SpaStaticFiles, spa_dist_dir
 
 
 API_V1_STR = "/api/v1"
+BACKOFFICE_URL = "/backoffice"
+BACKOFFICE_SESSION_COOKIE = "quiz_backoffice_session"
+BACKOFFICE_SESSION_MAX_AGE_SECONDS = 1800
 
 
 @asynccontextmanager
@@ -31,31 +34,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Set all CORS enabled origins
+app.add_exception_handler(AuthAPIError, auth_api_error_handler)
+app.add_middleware(
+    PreserveOriginalPeerMiddleware,
+    trusted_proxy_cidrs=settings.trusted_proxy_networks,
+)
+
+# Same-origin is the default. If cross-origin browser access is explicitly
+# configured, config validation guarantees a small exact allowlist and rejects
+# wildcard credential sharing before the application starts.
 if settings.ALL_CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=settings.ALL_CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-# Session cookies for the SQLAdmin login below.
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
-
-# Production (docker-compose.prod.yml) terminates TLS at Traefik and proxies
-# plain HTTP to this container over the Dokploy-managed network, so the peer
-# address Uvicorn sees is Traefik's, never 127.0.0.1 — Uvicorn's own
-# `--forwarded-allow-ips` default therefore never trusts it. Without this,
-# request.url.scheme (and anything url_for() builds from it, e.g. SQLAdmin's
-# static asset links) stays "http" even on an HTTPS request, which browsers
-# then block as mixed content. `trusted_hosts="*"` is the standard fix when
-# the proxy's IP isn't fixed/known ahead of time (Uvicorn's own deployment
-# docs recommend it for exactly this container-behind-reverse-proxy case);
-# added last so it's the outermost middleware and rewrites scope before
-# anything else — including SessionMiddleware above — reads it.
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(api_router, prefix=API_V1_STR)
 
@@ -65,13 +60,21 @@ app.include_router(api_router, prefix=API_V1_STR)
 # its prefix, so this can't share a prefix with the React router's own
 # "/admin/grades" routes — SQLAdmin would answer them with its own 404 instead
 # of the SPA ever seeing the request.
-BACKOFFICE_URL = "/backoffice"
-
 admin = Admin(
     app,
     engine,
     base_url=BACKOFFICE_URL,
-    authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY),
+    # SQLAdmin mounts a Starlette sub-application and installs the session
+    # middleware supplied by its AuthenticationBackend. Configure that exact
+    # boundary instead of adding a second, app-wide session middleware.
+    authentication_backend=AdminAuth(
+        secret_key=settings.SECRET_KEY,
+        session_cookie=BACKOFFICE_SESSION_COOKIE,
+        max_age=BACKOFFICE_SESSION_MAX_AGE_SECONDS,
+        path=BACKOFFICE_URL,
+        same_site="strict",
+        https_only=True,
+    ),
 )
 for view in ALL_VIEWS:
     admin.add_view(view)

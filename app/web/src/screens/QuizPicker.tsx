@@ -1,3 +1,4 @@
+import { useWorkGuard } from "@/api/session";
 import { useMutation } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -52,22 +53,31 @@ function levelColors(level: string | null): string {
 
 export function QuizPicker() {
   const navigate = useNavigate();
+  const capture = useWorkGuard();
   const [query, setQuery] = useState("");
   const { data: quizzes, isPending, error } = useQuizzes();
   const startAttempt = useAttemptStore((s) => s.start);
 
   const start = useMutation({
     mutationFn: async (quiz: QuizRead) => {
+      const current = capture();
       // Guard before creating the attempt. The Flet controller called
       // POST /attempts first and only then checked for questions, leaving an
       // orphan attempt behind for every empty quiz.
       if (quiz.question_ids.length === 0) throw new Error(t.quizHasNoQuestions);
 
       const questions = await api.getQuestions(quiz.question_ids);
+      current();
       const attempt = await api.startAttempt(quiz.id);
-      return { quiz, questions, attempt };
+      current();
+      return { quiz, questions, attempt, current };
     },
-    onSuccess: ({ quiz, questions, attempt }) => {
+    onSuccess: ({ quiz, questions, attempt, current }) => {
+      try {
+        current();
+      } catch {
+        return;
+      }
       startAttempt(quiz, questions, attempt.id);
       void navigate("/quiz/0");
     },

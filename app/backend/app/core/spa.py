@@ -29,6 +29,9 @@ class SpaStaticFiles(StaticFiles):
     """``StaticFiles`` that serves ``index.html`` for client-side routes."""
 
     async def get_response(self, path: str, scope) -> Response:
+        # Never turn a missing API/admin/docs route into an HTML success.
+        if path.split("/", 1)[0] in {"api", "backoffice", "docs", "redoc", "openapi.json"}:
+            raise HTTPException(status_code=404)
         try:
             return await super().get_response(path, scope)
         except HTTPException as exc:

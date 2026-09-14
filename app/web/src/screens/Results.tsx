@@ -1,3 +1,4 @@
+import { useWorkGuard } from "@/api/session";
 import { useMutation } from "@tanstack/react-query";
 import { FileText, Meh, Trophy } from "lucide-react";
 import { Navigate, useNavigate } from "react-router";
@@ -15,14 +16,17 @@ const PASS_THRESHOLD = 50;
 
 export function Results() {
   const navigate = useNavigate();
+  const capture = useWorkGuard();
   const result = useAttemptStore((s) => s.result);
   const attemptId = useAttemptStore((s) => s.attemptId);
   const reset = useAttemptStore((s) => s.reset);
 
   const download = useMutation({
     mutationFn: async () => {
+      const current = capture();
       if (!attemptId) throw new Error("no attempt");
       const blob = await api.downloadReportPdf(attemptId);
+      current();
 
       // Replaces the Flet FilePicker service (services/files.py) with the
       // browser's own save path.
