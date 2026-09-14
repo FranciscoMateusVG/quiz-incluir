@@ -14,9 +14,12 @@ relied on implicitly), so these can still be built directly from ORM rows via
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
+from typing import Annotated
+from unicodedata import category
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 
 from quiz_shared.enums import (
     CourseLevel,
@@ -30,6 +33,27 @@ from quiz_shared.enums import (
 
 class _Base(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+def _validate_canonical_identity(value: str) -> str:
+    """Validate a previously authenticated identity without DNS policy."""
+
+    if any(
+        ord(character) <= 0x1F
+        or ord(character) == 0x7F
+        or character in {"\u2028", "\u2029"}
+        or category(character) == "Cf"
+        for character in value
+    ):
+        raise ValueError("identity contains unsafe control characters")
+    return value
+
+
+CanonicalIdentityEmail = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=254),
+    AfterValidator(_validate_canonical_identity),
+]
 
 
 class MediaRead(_Base):
@@ -94,7 +118,10 @@ class AttemptRead(_Base):
 
 class UserRead(_Base):
     id: UUID
-    email: EmailStr
+    # This value has already been authenticated and normalized upstream by
+    # BetterAuth. Response serialization must not apply deliverability policy:
+    # the isolated parity fixture deliberately uses the reserved .test TLD.
+    email: CanonicalIdentityEmail
     level: CourseLevel
     role: UserRole
     created_at: datetime
@@ -106,10 +133,28 @@ class TokenRead(_Base):
     token_type: str = "bearer"
 
 
+class AuthErrorCode(StrEnum):
+    INVALID_CPF = "invalid_cpf"
+    INVALID_REQUEST = "invalid_request"
+    INVALID_CREDENTIALS = "invalid_credentials"
+    ACCOUNT_DENIED = "account_denied"
+    RATE_LIMITED = "rate_limited"
+    AUTH_REQUIRED = "auth_required"
+    AUTH_UNAVAILABLE = "auth_unavailable"
+    AUTH_INVALID_RESPONSE = "auth_invalid_response"
+    LOGOUT_UNCONFIRMED = "logout_unconfirmed"
+
+
+class AuthErrorResponse(_Base):
+    code: AuthErrorCode
+    message: str
+    retry_after_seconds: int | None = None
+
+
 class AdminAttemptRow(_Base):
     attempt_id: UUID
     user_id: UUID
-    email: EmailStr
+    email: CanonicalIdentityEmail
     level: CourseLevel
     score: float | None = None
     max_score: float

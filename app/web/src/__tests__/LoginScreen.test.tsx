@@ -46,6 +46,15 @@ describe("LoginScreen", () => {
       token_type: "bearer",
     });
 
+    vi.spyOn(api, "verifyLogin").mockResolvedValue({
+      id: "user-fixture",
+      email: "fixture@example.invalid",
+      name: "Fixture",
+      role: "student",
+      level: "B1",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    } as Awaited<ReturnType<typeof api.me>>);
     renderScreen();
     await userEvent.type(screen.getByLabelText("CPF"), "12345678900");
     await userEvent.type(screen.getByLabelText("Senha"), "hunter2");
@@ -69,4 +78,23 @@ describe("LoginScreen", () => {
     ).toBeInTheDocument();
     expect(getToken()).toBeNull();
   });
+});
+
+it("a detached login cannot store a late token or verify a newer session", async () => {
+  let resolve!: (v: Awaited<ReturnType<typeof api.login>>) => void;
+  vi.spyOn(api, "login").mockImplementation(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const verify = vi.spyOn(api, "verifyLogin");
+  const view = renderScreen();
+  await userEvent.type(screen.getByLabelText("CPF"), "12345678900");
+  await userEvent.type(screen.getByLabelText("Senha"), "fixture");
+  await userEvent.click(screen.getByRole("button", { name: "Entrar" }));
+  view.unmount();
+  resolve({ access_token: "late=fixture", token_type: "bearer" });
+  await waitFor(() => expect(verify).not.toHaveBeenCalled());
+  expect(getToken()).toBeNull();
 });

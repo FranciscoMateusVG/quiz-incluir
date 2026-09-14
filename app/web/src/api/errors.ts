@@ -7,6 +7,7 @@ export class QuizApiError extends Error {
     readonly detail: string,
     /** Seconds to wait before retrying, from a 429's `Retry-After` header. */
     readonly retryAfterSeconds?: number,
+    readonly code?: string,
   ) {
     super(detail);
     this.name = "QuizApiError";

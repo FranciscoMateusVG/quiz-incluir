@@ -1,5 +1,6 @@
 import { GraduationCap } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { getAuthNotice, setAuthNotice, useWorkGuard } from "@/api/session";
 import { useNavigate } from "react-router";
 
 import * as api from "@/api/client";
@@ -24,6 +25,8 @@ import { t } from "@/i18n/pt-BR";
  */
 export function LoginScreen() {
   const navigate = useNavigate();
+  const capture = useWorkGuard();
+  const pending = useRef(false);
   const [cpf, setCpf] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -31,6 +34,8 @@ export function LoginScreen() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pending.current) return;
+    const current = capture();
 
     const trimmedCpf = cpf.trim();
     if (!trimmedCpf || !password) {
@@ -38,15 +43,26 @@ export function LoginScreen() {
       return;
     }
 
+    pending.current = true;
     setLoading(true);
     setError("");
     try {
       const result = await api.login(trimmedCpf, password);
+      current();
+      await api.verifyLogin(result.access_token);
+      current();
+      setAuthNotice("");
       setToken(result.access_token);
       void navigate("/quizzes");
     } catch (err) {
-      setError(mapLoginError(err));
+      try {
+        current();
+        setError(mapLoginError(err));
+      } catch {
+        /* detached login */
+      }
     } finally {
+      pending.current = false;
       setLoading(false);
     }
   };
@@ -66,6 +82,7 @@ export function LoginScreen() {
           </div>
         </div>
 
+        {getAuthNotice() ? <p role="alert">{getAuthNotice()}</p> : null}
         <form onSubmit={(e) => void submit(e)} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="cpf">{t.cpfLabel}</Label>
