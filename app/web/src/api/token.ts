@@ -1,3 +1,5 @@
+import { invalidateWork } from "./session";
+
 /**
  * Single source of truth for the API token.
  *
@@ -13,6 +15,8 @@ const KEY = "quiz.token";
 
 /** Fallback for private-mode browsers where sessionStorage throws. */
 let memoryToken: string | null = null;
+let revision = 0;
+export const tokenRevision = () => revision;
 
 export function getToken(): string | null {
   try {
@@ -23,21 +27,30 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string): void {
+  revision++;
+  try {
+    window.sessionStorage.removeItem("quiz.attempt");
+  } catch {
+    /* unavailable storage */
+  }
   memoryToken = token;
   try {
     window.sessionStorage.setItem(KEY, token);
   } catch {
     /* memory-only is an acceptable degradation */
   }
+  invalidateWork();
 }
 
 export function clearToken(): void {
+  revision++;
   memoryToken = null;
   try {
     window.sessionStorage.removeItem(KEY);
   } catch {
     /* nothing to clean up */
   }
+  invalidateWork();
 }
 
 /**

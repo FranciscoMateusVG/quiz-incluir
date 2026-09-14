@@ -1,9 +1,18 @@
 from functools import lru_cache
-from pathlib import Path
+from ipaddress import IPv4Network, IPv6Network
 from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.client_ip import parse_trusted_proxy_cidrs
+
+
+_ALLOWED_MONOREPO_AUTH_URLS = {
+    "http://hono-app:3003",
+    "http://quiz-staging-hono:3003",
+    "http://127.0.0.1:4503",
+}
 
 
 class Settings(BaseSettings):
@@ -37,9 +46,41 @@ class Settings(BaseSettings):
         return v
 
     MONOREPO_AUTH_URL: str = Field(
-        default="http://localhost:3003",
+        default="http://hono-app:3003",
         description="Base URL of the Programa Incluir monorepo's auth API (hono-app / BetterAuth). "
         "The quiz backend delegates all end-user authentication to this service.",
+    )
+
+    @field_validator("MONOREPO_AUTH_URL")
+    @classmethod
+    def require_private_auth_url(cls, v: str) -> str:
+        if v not in _ALLOWED_MONOREPO_AUTH_URLS:
+            raise ValueError("MONOREPO_AUTH_URL is not an approved auth service origin")
+        return v
+
+    TRUSTED_PROXY_CIDRS: str = Field(
+        default="",
+        description="Comma-separated exact /32 or /128 public reverse-proxy peers whose "
+        "X-Forwarded-For chains may be interpreted. Empty trusts no proxies.",
+    )
+
+    @field_validator("TRUSTED_PROXY_CIDRS")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, v: str) -> str:
+        # Parse during settings construction so malformed or wildcard trust
+        # fails startup rather than silently changing rate-limit attribution.
+        parse_trusted_proxy_cidrs(v)
+        return v
+
+    @property
+    def trusted_proxy_networks(self) -> tuple[IPv4Network | IPv6Network, ...]:
+        return parse_trusted_proxy_cidrs(self.TRUSTED_PROXY_CIDRS)
+
+    FLET_SESSION_TIMEOUT_SECONDS: int = Field(
+        default=3600,
+        ge=1,
+        le=3600,
+        description="Disconnected Flet session retention. Production default/max is one hour.",
     )
 
     SECRET_KEY: str = Field(
@@ -47,14 +88,23 @@ class Settings(BaseSettings):
         description="Session-signing key for the SQLAdmin backoffice panel only.",
     )
 
-    FRONTEND_URL: str = Field(default="http://localhost:3000", description="Frontend URL for CORS and OAuth redirects")
+    FRONTEND_URL: str = Field(
+        default="http://localhost:3000",
+        description="Frontend URL for CORS and OAuth redirects",
+    )
 
-    ALL_CORS_ORIGINS: List[str] = Field(default=["*"], description="Allowed CORS origins")
+    ALL_CORS_ORIGINS: List[str] = Field(
+        default=["*"], description="Allowed CORS origins"
+    )
 
-    DEFAULT_USER_LEVEL: str = Field(default="B1", description="Default course level for new users")
+    DEFAULT_USER_LEVEL: str = Field(
+        default="B1", description="Default course level for new users"
+    )
 
     ADMIN_USERNAME: str = Field(default="admin", description="SQLAdmin panel username")
-    ADMIN_PASSWORD: str = Field(default="change-me", description="SQLAdmin panel password")
+    ADMIN_PASSWORD: str = Field(
+        default="change-me", description="SQLAdmin panel password"
+    )
 
 
 @lru_cache
@@ -63,18 +113,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-
-# The monorepo's own e2e seed script (apps/hono-app/scripts/seed-e2e.ts)
-# deliberately uses `@*.test` addresses — the RFC 2606 TLD reserved exactly
-# for this purpose, so fixtures can never collide with a real domain.
-# `email_validator` (which backs every `EmailStr` field here, including
-# UserRead/AdminAttemptRow on read and UserCreate on write) rejects reserved
-# TLDs by default, which meant `get_or_create_by_email` 422'd for every
-# seeded account the moment a real login mirrored one in.
-#
-# This only ever relaxes validation for `.test`/`.example`/`.invalid`/
-# `.localhost` — no real account can have one of those, so it's safe to leave
-# on unconditionally rather than gating it behind an env var.
-import email_validator  # noqa: E402
-
-email_validator.TEST_ENVIRONMENT = True

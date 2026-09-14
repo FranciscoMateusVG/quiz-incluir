@@ -1,4 +1,4 @@
-from pydantic import EmailStr, Field
+from pydantic import ConfigDict, EmailStr, Field
 from sqlmodel import SQLModel
 
 from app.models import CourseLevel
@@ -17,7 +17,8 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(SQLModel):
-    email: EmailStr | None = None
+    model_config = ConfigDict(extra="forbid")
+
     level: CourseLevel | None = None
 
 

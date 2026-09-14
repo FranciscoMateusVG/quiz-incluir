@@ -4,7 +4,8 @@
  */
 
 import { QuizApiError } from "./errors";
-import { getToken } from "./token";
+import { getToken, clearToken } from "./token";
+import { sessionEpoch, assertCurrent } from "./session";
 import {
   type AdminAttemptRow,
   type AnswerRead,
@@ -25,9 +26,8 @@ const BASE_URL = (
 
 const API = `${BASE_URL}/api/v1`;
 
-function headers(): HeadersInit {
+function headers(token = getToken()): HeadersInit {
   const h: Record<string, string> = { "Content-Type": "application/json" };
-  const token = getToken();
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
@@ -49,8 +49,20 @@ async function handle(resp: Response, path: string): Promise<unknown> {
   if (!resp.ok) {
     const body = await resp.text();
     let detail = body;
+    let code: string | undefined;
     try {
       const parsed: unknown = JSON.parse(body);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "code" in parsed &&
+        typeof parsed.code === "string" &&
+        "message" in parsed &&
+        typeof parsed.message === "string"
+      ) {
+        code = parsed.code;
+        detail = parsed.message;
+      }
       if (parsed && typeof parsed === "object" && "detail" in parsed) {
         const d = parsed.detail;
         if (typeof d === "string") detail = d;
@@ -69,6 +81,7 @@ async function handle(resp: Response, path: string): Promise<unknown> {
       resp.status,
       detail || resp.statusText,
       Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
+      code,
     );
   }
 
@@ -86,19 +99,38 @@ async function handle(resp: Response, path: string): Promise<unknown> {
   return resp.json();
 }
 
-async function get(path: string): Promise<unknown> {
-  return handle(await fetch(`${API}${path}`, { headers: headers() }), path);
-}
-
-async function post(path: string, body?: unknown): Promise<unknown> {
-  return handle(
-    await fetch(`${API}${path}`, {
-      method: "POST",
+async function request(path: string, init: RequestInit = {}): Promise<unknown> {
+  const expected = sessionEpoch();
+  try {
+    const resp = await fetch(`${API}${path}`, {
+      ...init,
       headers: headers(),
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-    path,
-  );
+      signal: AbortSignal.timeout(10_000),
+    });
+    assertCurrent(expected);
+    const data = await handle(resp, path);
+    assertCurrent(expected);
+    return data;
+  } catch (error) {
+    assertCurrent(expected);
+    // Only the typed authoritative invalid-session response clears credentials.
+    if (
+      error instanceof QuizApiError &&
+      error.status === 401 &&
+      error.code === "auth_required"
+    )
+      clearToken();
+    throw error;
+  }
+}
+async function get(path: string): Promise<unknown> {
+  return request(path);
+}
+async function post(path: string, body?: unknown): Promise<unknown> {
+  return request(path, {
+    method: "POST",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 }
 
 // ---------------------------------------------------------------- auth
@@ -116,25 +148,37 @@ export async function login(
   identifier: string,
   password = "",
 ): Promise<TokenRead> {
+  const expected = sessionEpoch();
   const resp = await fetch(`${API}/auth/token`, {
+    signal: AbortSignal.timeout(10_000),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ username: identifier, password }),
   });
-  return (await handle(resp, "/auth/token")) as TokenRead;
+  const result = (await handle(resp, "/auth/token")) as TokenRead;
+  assertCurrent(expected);
+  return result;
 }
 
-/**
- * Revoke the session server-side. Best-effort from the caller's point of
- * view: a network hiccup here must not block sign-out, so failures are
- * swallowed rather than thrown.
- */
+/** Clear local access in the caller, but never pretend failed revocation succeeded. */
 export async function logout(): Promise<void> {
-  try {
-    await fetch(`${API}/auth/logout`, { method: "POST", headers: headers() });
-  } catch {
-    /* sign-out proceeds locally regardless */
-  }
+  const resp = await fetch(`${API}/auth/logout`, {
+    method: "POST",
+    headers: headers(),
+    signal: AbortSignal.timeout(10_000),
+  });
+  await handle(resp, "/auth/logout");
+  if (resp.status !== 204) throw new QuizApiError(502, "Saída não confirmada.");
+}
+export async function verifyLogin(token: string): Promise<UserRead> {
+  const expected = sessionEpoch();
+  const resp = await fetch(`${API}/users/me`, {
+    headers: headers(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const user = (await handle(resp, "/users/me")) as UserRead;
+  assertCurrent(expected);
+  return user;
 }
 
 export async function me(): Promise<UserRead> {
@@ -191,7 +235,12 @@ export async function finishAttempt(attemptId: string): Promise<AttemptRead> {
  */
 export async function downloadReportPdf(attemptId: string): Promise<Blob> {
   const path = `/attempts/${attemptId}/report.pdf`;
-  const resp = await fetch(`${API}${path}`, { headers: headers() });
+  const expected = sessionEpoch();
+  const resp = await fetch(`${API}${path}`, {
+    headers: headers(),
+    signal: AbortSignal.timeout(10_000),
+  });
+  assertCurrent(expected);
   if (!resp.ok) {
     const body = await resp.text();
     let detail = body;
@@ -206,7 +255,9 @@ export async function downloadReportPdf(attemptId: string): Promise<Blob> {
     }
     throw new QuizApiError(resp.status, detail || resp.statusText);
   }
-  return resp.blob();
+  const blob = await resp.blob();
+  assertCurrent(expected);
+  return blob;
 }
 
 // ---------------------------------------------------------------- admin

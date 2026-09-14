@@ -119,9 +119,9 @@ describe("logout", () => {
     expect(init.method).toBe("POST");
   });
 
-  it("never throws, even if the request fails", async () => {
+  it("reports unconfirmed revocation when the request fails", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("network down"));
-    await expect(api.logout()).resolves.toBeUndefined();
+    await expect(api.logout()).rejects.toThrow("network down");
   });
 });
 
@@ -165,5 +165,75 @@ describe("mapLoginError", () => {
     expect(mapLoginError(new Error("not even a QuizApiError"))).toMatch(
       /Não foi possível entrar/,
     );
+  });
+});
+
+describe("preserved auth and stale-response boundaries", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("parses the deployed typed auth error instead of displaying raw JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(502, {
+            code: "logout_unconfirmed",
+            message: "Saída não confirmada.",
+          }),
+        ),
+    );
+    await expect(api.logout()).rejects.toMatchObject({
+      status: 502,
+      code: "logout_unconfirmed",
+      detail: "Saída não confirmada.",
+    });
+  });
+  it("retains credentials on unavailable session but clears on typed auth_required only", async () => {
+    const { setToken, getToken } = await import("@/api/token");
+    setToken("fixture=session");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse(503, {
+            code: "auth_unavailable",
+            message: "Unavailable",
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(401, { code: "auth_required", message: "Required" }),
+        ),
+    );
+    await expect(api.me()).rejects.toMatchObject({ status: 503 });
+    expect(getToken()).toBe("fixture=session");
+    await expect(api.me()).rejects.toMatchObject({ status: 401 });
+    expect(getToken()).toBeNull();
+  });
+  it("rejects late results after auth generation changes without clearing a newer login", async () => {
+    const { setToken, getToken } = await import("@/api/token");
+    let resolve!: (r: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((r) => {
+            resolve = r;
+          }),
+      ),
+    );
+    setToken("old=fixture");
+    const pending = api.me();
+    setToken("new=fixture");
+    resolve(jsonResponse(401, { code: "auth_required", message: "Expired" }));
+    await expect(pending).rejects.toThrow("Sessão ou navegação alterada");
+    expect(getToken()).toBe("new=fixture");
+  });
+  it("a 200 logout is not proof of the current 204 revocation contract", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(200, { success: true })),
+    );
+    await expect(api.logout()).rejects.toMatchObject({ status: 502 });
   });
 });
