@@ -43,7 +43,7 @@ export function Results() {
       toast.error(`${t.couldNotDownloadReport}: ${errorMessage(err)}`),
   });
 
-  if (!result) return <Navigate to="/quizzes" replace />;
+  if (!result) return <Navigate to="/units" replace />;
 
   const score = result.score ?? 0;
   const maxScore = result.max_score ?? 0;
@@ -66,12 +66,12 @@ export function Results() {
         </p>
         <p className="text-muted-700">{t.percentCorrect(pct)}</p>
 
-        <div className="flex gap-3 pt-6">
+        <div className="flex flex-col gap-3 pt-6 sm:flex-row">
           <Button
             className="flex-1"
             onClick={() => {
               reset();
-              void navigate("/quizzes");
+              void navigate("/units");
             }}
           >
             {t.takeAnotherQuiz}

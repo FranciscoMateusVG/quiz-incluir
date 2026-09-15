@@ -11,7 +11,7 @@ export function NotFound() {
       <p className="text-5xl font-bold">404</p>
       <p className="text-lg text-muted-foreground">{t.pageNotFound}</p>
       <Button asChild>
-        <Link to="/quizzes">{t.goToHomepage}</Link>
+        <Link to="/units">{t.goToHomepage}</Link>
       </Button>
     </div>
   );

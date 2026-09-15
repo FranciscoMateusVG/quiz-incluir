@@ -81,6 +81,8 @@ export interface QuizRead {
   description: string | null;
   category: QuizCategory;
   level: LanguageLevel;
+  /** Free-text workbook unit, e.g. "Unit 3". Null for untagged quizzes. */
+  unit: string | null;
   created_at: string;
   updated_at: string;
   /** Already ordered by the quiz_questions.position column. */

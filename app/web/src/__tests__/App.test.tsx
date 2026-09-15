@@ -31,7 +31,7 @@ describe("App", () => {
   });
 
   it("redirects a protected route to the index when there is no token", () => {
-    window.history.pushState({}, "", "/quizzes");
+    window.history.pushState({}, "", "/units");
     render(<App />);
     // The guard bounces to "/", so the login screen is what renders.
     expect(screen.getByText("Entrar")).toBeInTheDocument();
@@ -60,7 +60,7 @@ describe("token storage", () => {
 describe("retained auth lifecycle", () => {
   beforeEach(() => {
     clearToken();
-    window.history.pushState({}, "", "/quizzes");
+    window.history.pushState({}, "", "/units");
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -129,7 +129,7 @@ it("detaching a quiz start between reads prevents the subsequent attempt mutatio
   let resolve!: (v: Awaited<ReturnType<typeof api.getQuestions>>) => void;
   clearToken();
   setToken("fixture=token");
-  window.history.pushState({}, "", "/quizzes");
+  window.history.pushState({}, "", "/units/Unit%201");
   vi.spyOn(api, "me").mockResolvedValue({
     id: "fixture",
     email: "fixture@example.invalid",
@@ -142,6 +142,7 @@ it("detaching a quiz start between reads prevents the subsequent attempt mutatio
       description: null,
       category: "reading",
       level: "A1",
+      unit: "Unit 1",
       created_at: "2026-01-01Z",
       updated_at: "2026-01-01Z",
       question_ids: ["question-fixture"],

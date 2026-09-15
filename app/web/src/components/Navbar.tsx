@@ -27,7 +27,7 @@ export function Navbar({
   return (
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4">
-        <Link to="/quizzes" className="shrink-0">
+        <Link to="/units" className="shrink-0">
           <img
             src="/logo.jpg"
             alt=""
@@ -35,7 +35,7 @@ export function Navbar({
           />
         </Link>
 
-        <h1 className="flex-1 truncate font-bold">{title}</h1>
+        <h1 className="min-w-0 flex-1 truncate font-bold">{title}</h1>
 
         {isAdmin ? (
           <Button

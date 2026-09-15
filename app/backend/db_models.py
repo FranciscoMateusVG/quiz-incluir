@@ -106,6 +106,7 @@ class Quiz(SQLModel, table=True):
 
     category: QuizCategory = QuizCategory.READING
     level: LanguageLevel = LanguageLevel.A1
+    unit: str | None = None
 
     created_at: datetime = Field(default_factory=_utcnow, sa_column=_tz_datetime_column())
     updated_at: datetime = Field(default_factory=_utcnow, sa_column=_tz_datetime_column(onupdate=True))

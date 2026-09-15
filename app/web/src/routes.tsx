@@ -30,8 +30,9 @@ const AdminGrades = lazy(async () => ({
 }));
 import { NotFound } from "@/screens/NotFound";
 import { Question } from "@/screens/Question";
-import { QuizPicker } from "@/screens/QuizPicker";
 import { Results } from "@/screens/Results";
+import { UnitPicker } from "@/screens/UnitPicker";
+import { UnitQuizzes } from "@/screens/UnitQuizzes";
 import { t } from "@/i18n/pt-BR";
 import { clearToken } from "@/api/token";
 import { useAttemptStore } from "@/store/useAttemptStore";
@@ -89,7 +90,7 @@ function RequireAuth({
     );
   const user = validation.user;
   if (adminOnly && user.role !== "admin")
-    return <Navigate to="/quizzes" replace />;
+    return <Navigate to="/units" replace />;
   const signOut = async () => {
     if (leaving) return;
     const token = getToken();
@@ -130,10 +131,18 @@ export function AppRoutes() {
       <Route path="/" element={<LoginScreen />} />
 
       <Route
-        path="/quizzes"
+        path="/units"
         element={
           <RequireAuth>
-            <QuizPicker />
+            <UnitPicker />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/units/:unit"
+        element={
+          <RequireAuth>
+            <UnitQuizzes />
           </RequireAuth>
         }
       />

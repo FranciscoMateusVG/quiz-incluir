@@ -21,6 +21,7 @@ class QuizBase(SQLModel):
     description: str | None = None
     category: QuizCategory = QuizCategory.READING
     level: LanguageLevel = LanguageLevel.A1
+    unit: str | None = None
 
 
 class QuizCreate(QuizBase):
@@ -32,6 +33,7 @@ class QuizUpdate(SQLModel):
     description: str | None = None
     category: QuizCategory | None = None
     level: LanguageLevel | None = None
+    unit: str | None = None
 
 
 class QuizQuestionLinkCreate(SQLModel):

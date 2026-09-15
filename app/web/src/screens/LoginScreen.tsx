@@ -53,7 +53,7 @@ export function LoginScreen() {
       current();
       setAuthNotice("");
       setToken(result.access_token);
-      void navigate("/quizzes");
+      void navigate("/units");
     } catch (err) {
       try {
         current();

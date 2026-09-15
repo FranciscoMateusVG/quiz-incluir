@@ -99,7 +99,7 @@ export function Question() {
   // No attempt in this tab (fresh tab, cleared storage, a shared link): send
   // them to the picker rather than rendering a dead end, which is what the
   // Flet screen did with its "No question to display." fallback.
-  if (!attemptId || total === 0) return <Navigate to="/quizzes" replace />;
+  if (!attemptId || total === 0) return <Navigate to="/units" replace />;
 
   // Out-of-range index in the URL — clamp instead of erroring.
   if (!question) {
@@ -118,6 +118,13 @@ export function Question() {
       />
 
       <div className="h-2" />
+
+      {/* Shown on every question, not just the first, for the same reason as
+          the media block below: it stays available for reference throughout
+          the quiz instead of being scrolled past on question 1. */}
+      {quiz?.description ? (
+        <p className="text-sm text-muted-700">{quiz.description}</p>
+      ) : null}
 
       {/* Context shared by the whole quiz — the reading passage or listening
           clip. Deliberately shown on every question, not just the first, so it
