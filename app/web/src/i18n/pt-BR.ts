@@ -111,4 +111,5 @@ export const t = {
   loginErrorGeneric: "Não foi possível entrar. Tente novamente.",
   signOut: "Sair",
   adminGradesLink: "Admin: Notas",
+  accountMenu: "Menu da conta",
 } as const;

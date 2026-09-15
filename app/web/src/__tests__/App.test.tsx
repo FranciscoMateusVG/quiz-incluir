@@ -102,14 +102,14 @@ describe("retained auth lifecycle", () => {
       );
     vi.spyOn(api, "listQuizzes").mockResolvedValue([]);
     render(<App />);
-    await screen.findByRole("button", { name: /sair/i });
+    await screen.findByRole("button", { name: /menu da conta/i });
     act(() => window.dispatchEvent(new Event("focus")));
     expect(screen.getByText("Verificando acesso…")).toBeInTheDocument();
     await waitFor(() => expect(me).toHaveBeenCalledTimes(2));
     act(() => clearToken());
     await act(async () => resolve(user));
     expect(screen.getByRole("button", { name: "Entrar" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /sair/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /menu da conta/i })).toBeNull();
   });
   it("failed logout clears local access and explicitly warns revocation was not confirmed", async () => {
     setToken("fixture=token");
@@ -117,7 +117,10 @@ describe("retained auth lifecycle", () => {
     vi.spyOn(api, "listQuizzes").mockResolvedValue([]);
     vi.spyOn(api, "logout").mockRejectedValue(new Error("unconfirmed"));
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: /sair/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /menu da conta/i }),
+    );
+    await userEvent.click(await screen.findByRole("menuitem", { name: /sair/i }));
     expect(
       await screen.findByText(/não foi possível confirmar o encerramento/),
     ).toBeInTheDocument();
