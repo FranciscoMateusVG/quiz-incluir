@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router";
 
 import { errorMessage } from "@/api/errors";
 import { useQuizzes } from "@/api/queries";
-import { type QuizCategory } from "@/api/types";
+import { type CourseLevel, type QuizCategory } from "@/api/types";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { QuizCard } from "@/components/QuizCard";
@@ -20,15 +20,21 @@ const SECTIONS: readonly { key: QuizCategory; title: string }[] = [
   { key: "vocabulary_grammar", title: t.sectionVocabulary },
 ];
 
-export function UnitQuizzes() {
-  const { unit: encodedUnit } = useParams<{ unit: string }>();
+export function LevelUnitQuizzes() {
+  const { level, unit: encodedUnit } = useParams<{
+    level: CourseLevel;
+    unit: string;
+  }>();
   const unit = encodedUnit ? decodeURIComponent(encodedUnit) : "";
   const { data: quizzes, isPending, error } = useQuizzes();
   const start = useStartQuiz();
 
   const items = useMemo(
-    () => (quizzes ?? []).filter((q) => q.unit === unit),
-    [quizzes, unit],
+    () =>
+      (quizzes ?? []).filter(
+        (q) => q.course_level === level && q.unit === unit,
+      ),
+    [quizzes, level, unit],
   );
 
   if (isPending) return <Spinner label={t.loadingQuizzes} />;
@@ -42,7 +48,7 @@ export function UnitQuizzes() {
   return (
     <div className="space-y-5 p-5">
       <Link
-        to="/units"
+        to={`/levels/${level}`}
         className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="size-4" />

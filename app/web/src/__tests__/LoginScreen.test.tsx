@@ -40,7 +40,7 @@ describe("LoginScreen", () => {
     expect(loginSpy).not.toHaveBeenCalled();
   });
 
-  it("stores the token and navigates to /units on success", async () => {
+  it("stores the token and navigates to /levels on success", async () => {
     vi.spyOn(api, "login").mockResolvedValueOnce({
       access_token: "session=abc",
       token_type: "bearer",

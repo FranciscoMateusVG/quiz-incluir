@@ -28,11 +28,12 @@ const AdminQuizList = lazy(async () => ({
 const AdminGrades = lazy(async () => ({
   default: (await import("@/screens/AdminGrades")).AdminGrades,
 }));
+import { LevelPicker } from "@/screens/LevelPicker";
+import { LevelUnits } from "@/screens/LevelUnits";
+import { LevelUnitQuizzes } from "@/screens/LevelUnitQuizzes";
 import { NotFound } from "@/screens/NotFound";
 import { Question } from "@/screens/Question";
 import { Results } from "@/screens/Results";
-import { UnitPicker } from "@/screens/UnitPicker";
-import { UnitQuizzes } from "@/screens/UnitQuizzes";
 import { t } from "@/i18n/pt-BR";
 import { clearToken } from "@/api/token";
 import { useAttemptStore } from "@/store/useAttemptStore";
@@ -90,7 +91,7 @@ function RequireAuth({
     );
   const user = validation.user;
   if (adminOnly && user.role !== "admin")
-    return <Navigate to="/units" replace />;
+    return <Navigate to="/levels" replace />;
   const signOut = async () => {
     if (leaving) return;
     const token = getToken();
@@ -131,18 +132,26 @@ export function AppRoutes() {
       <Route path="/" element={<LoginScreen />} />
 
       <Route
-        path="/units"
+        path="/levels"
         element={
           <RequireAuth>
-            <UnitPicker />
+            <LevelPicker />
           </RequireAuth>
         }
       />
       <Route
-        path="/units/:unit"
+        path="/levels/:level"
         element={
           <RequireAuth>
-            <UnitQuizzes />
+            <LevelUnits />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/levels/:level/units/:unit"
+        element={
+          <RequireAuth>
+            <LevelUnitQuizzes />
           </RequireAuth>
         }
       />

@@ -31,9 +31,24 @@ class QuizAdmin(ModelView, model=Quiz):
     name_plural = "Quizzes"
     icon = "fa-solid fa-list-check"
 
-    column_list = [Quiz.id, Quiz.title, Quiz.category, Quiz.level, Quiz.unit, Quiz.created_at]
+    column_list = [
+        Quiz.id,
+        Quiz.title,
+        Quiz.category,
+        Quiz.level,
+        Quiz.course_level,
+        Quiz.unit,
+        Quiz.created_at,
+    ]
     column_searchable_list = [Quiz.title, Quiz.unit]
-    column_sortable_list = [Quiz.title, Quiz.category, Quiz.level, Quiz.unit, Quiz.created_at]
+    column_sortable_list = [
+        Quiz.title,
+        Quiz.category,
+        Quiz.level,
+        Quiz.course_level,
+        Quiz.unit,
+        Quiz.created_at,
+    ]
     form_excluded_columns = [Quiz.questions, Quiz.attempts, Quiz.media]
 
 

@@ -90,6 +90,7 @@ class QuizRead(_Base):
     description: str | None = None
     category: QuizCategory
     level: LanguageLevel
+    course_level: CourseLevel
     unit: str | None = None
     created_at: datetime
     updated_at: datetime

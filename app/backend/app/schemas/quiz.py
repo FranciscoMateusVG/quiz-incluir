@@ -2,7 +2,7 @@ from uuid import UUID
 
 from sqlmodel import SQLModel
 
-from app.models import LanguageLevel, QuizCategory
+from app.models import CourseLevel, LanguageLevel, QuizCategory
 from quiz_shared.schemas import QuizRead
 
 __all__ = [
@@ -21,6 +21,7 @@ class QuizBase(SQLModel):
     description: str | None = None
     category: QuizCategory = QuizCategory.READING
     level: LanguageLevel = LanguageLevel.A1
+    course_level: CourseLevel = CourseLevel.B1
     unit: str | None = None
 
 
@@ -33,6 +34,7 @@ class QuizUpdate(SQLModel):
     description: str | None = None
     category: QuizCategory | None = None
     level: LanguageLevel | None = None
+    course_level: CourseLevel | None = None
     unit: str | None = None
 
 

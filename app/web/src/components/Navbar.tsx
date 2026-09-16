@@ -56,7 +56,7 @@ export function Navbar({
   return (
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4">
-        <Link to="/units" className="shrink-0">
+        <Link to="/levels" className="shrink-0">
           <img
             src="/logo.jpg"
             alt=""

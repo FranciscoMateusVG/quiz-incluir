@@ -43,7 +43,7 @@ export function Results() {
       toast.error(`${t.couldNotDownloadReport}: ${errorMessage(err)}`),
   });
 
-  if (!result) return <Navigate to="/units" replace />;
+  if (!result) return <Navigate to="/levels" replace />;
 
   const score = result.score ?? 0;
   const maxScore = result.max_score ?? 0;
@@ -71,7 +71,7 @@ export function Results() {
             className="flex-1"
             onClick={() => {
               reset();
-              void navigate("/units");
+              void navigate("/levels");
             }}
           >
             {t.takeAnotherQuiz}

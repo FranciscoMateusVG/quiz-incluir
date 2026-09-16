@@ -10,6 +10,7 @@ function quiz(id: string, unit: string | null): QuizRead {
     description: null,
     category: "reading",
     level: "A1",
+    course_level: "B1",
     unit,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",

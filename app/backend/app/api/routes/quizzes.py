@@ -33,6 +33,7 @@ async def _to_read(db: AsyncSession, quiz: Quiz) -> QuizRead:
         description=quiz.description,
         category=quiz.category,
         level=quiz.level,
+        course_level=quiz.course_level,
         unit=quiz.unit,
         created_at=quiz.created_at,
         updated_at=quiz.updated_at,

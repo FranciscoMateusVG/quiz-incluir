@@ -99,7 +99,7 @@ export function Question() {
   // No attempt in this tab (fresh tab, cleared storage, a shared link): send
   // them to the picker rather than rendering a dead end, which is what the
   // Flet screen did with its "No question to display." fallback.
-  if (!attemptId || total === 0) return <Navigate to="/units" replace />;
+  if (!attemptId || total === 0) return <Navigate to="/levels" replace />;
 
   // Out-of-range index in the URL — clamp instead of erroring.
   if (!question) {

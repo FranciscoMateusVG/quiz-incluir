@@ -81,6 +81,8 @@ export interface QuizRead {
   description: string | null;
   category: QuizCategory;
   level: LanguageLevel;
+  /** The turma/course level this quiz belongs to. Distinct from {@link LanguageLevel}. */
+  course_level: CourseLevel;
   /** Free-text workbook unit, e.g. "Unit 3". Null for untagged quizzes. */
   unit: string | null;
   created_at: string;
